@@ -87,6 +87,9 @@ PLAYER_CSS = """html,body{margin:0;background:#fff}#art{display:block}
 padding:6px 10px;border-radius:6px;cursor:pointer;user-select:none}"""
 
 def main():
+    print("DEPRECATED: pixel mode (build_svg.py) is no longer the default. "
+          "Use vectorize.py for SVG redraw; this script is kept for pixel-error reference only.",
+          file=sys.stderr)
     ref, out = sys.argv[1], sys.argv[2]
     K = int(sys.argv[3]) if len(sys.argv) > 3 else 2048
     sketch_thr = float(sys.argv[4]) if len(sys.argv) > 4 else 16.0

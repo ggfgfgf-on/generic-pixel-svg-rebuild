@@ -1,0 +1,30 @@
+This skill is licensed under the GNU General Public License, version 2 or later
+(GPL-2.0-or-later). See LICENSE.
+
+Why copyleft: the SVG curve tracing is performed by potrace, which is GPL-2.0.
+
+  * scripts/native/trace_core.dll
+        compiles potrace 1.16 (https://potrace.sourceforge.net/) behind a thin
+        C ABI wrapper (scripts/native/trace_core.cpp). Its full license text is
+        scripts/native/COPYING.
+  * potracer (pip package, GPLv2+)
+        the pure-Python fallback used when the DLL is absent or disabled.
+
+Everything else in this directory is original work and is released under the same
+license for consistency:
+
+  * scripts/build_svg.py, vectorize.py, seal_gaps.py, metric.py, steps.py,
+    autotune.py, render.py, render.js, smooth_svg.py, native_loader.py,
+    paint_process.py
+  * tests/, IMPLEMENTATION.md, SKILL.md
+
+The palette quantizer (scripts/native/palette_core.cpp) is original code with no
+potrace dependency; it is licensed under the same GPL-2.0-or-later terms to keep
+the directory single-licensed.
+
+Corresponding source: the potrace 1.16 sources needed to rebuild trace_core.dll
+are available from the upstream address above; build steps are in
+scripts/native/README.md.
+
+vtracer (scripts/smooth_svg.py) is MIT-licensed and is NOT part of the GPL-bound
+tracing path; it is an optional alternative renderer.

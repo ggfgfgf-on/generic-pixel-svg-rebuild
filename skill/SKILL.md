@@ -15,26 +15,50 @@ description: Use when a bitmap (PNG/JPEG, <=2MP) must be rebuilt as a self-conta
 
 ## 脚本（A→G 全链路已固化）
 
-```bash
-# 推荐入口：K 自动翻倍 + 逐帧渲染 + 指标，产出 outdir/final.html
-python <skill>/scripts/autotune.py ref.png outdir --k-start 1024 --max-k 8192 --gain 3
+**默认用 `vectorize.py` 做 SVG 重绘；`build_svg.py` 的像素矩形模式已弃用**，只保留作逐像素误差参考，不再作为默认或交付。`paint_process.py` 是显式可选分支，用户没有点名“作画过程 / 回放”时不要调用。
 
-# 分步
+```bash
+# 默认：SVG 矢量重绘（最高挡 K=384 / 3× 超采样）
+python <skill>/scripts/vectorize.py ref.png out.html 384 6 1.0 1 0.4 3 0
+
+# 常规档：K=192 / 2× 超采样
+python <skill>/scripts/vectorize.py ref.png out.html 192 6 1.0 1 0.4 2 0
+
+# 静态 SVG 交付：输出名用 .svg，自动去掉 data-step / data-total
+# 播放标记只属于 HTML 分支；过程模式才按绘画阶段分 step
+python <skill>/scripts/vectorize.py ref.png out.svg 128 6 1.0 1 0.4 1 0
+# K 不给时默认 128 并打印提示；交付档一律显式写 256~384
+
+# 补缝：把层与层之间的细缝用最近色填上（dilate=0 或低 K 有明显白缝时用）
+# 只填"细"缝（距离变换 ≤1.5px）和小噪点；要求有不透明底色 rect，透明图会明确跳过
+python <skill>/scripts/vectorize.py ref.png out.html 128 6 1.0 0 0.4 1 0 --seal
+python <skill>/scripts/seal_gaps.py out.svg shot.png out-sealed.svg   # 也可独立对已有产物跑
+
+# 极致色板：全量像素做 median cut（Windows x64 原生 palette_core.dll）
+# 默认是抽样 24 万像素 + cKDTree 全量分配；--palette-sample=N 可调抽样数
+python <skill>/scripts/vectorize.py ref.png out.html 384 6 1.0 1 0.4 3 0 --full-palette
+
+# 已弃用：像素矩形，仅历史/逐像素误差对照；运行会打印 DEPRECATED
 python <skill>/scripts/build_svg.py ref.png out.html [K] [sketchThr]   # A→F，默认 K=2048 sketch=16
+
 python <skill>/scripts/render.py out.html shot.png W H "?step=11&v=1"  # 精确尺寸截图（零依赖，调系统 Edge/Chrome）
 node   <skill>/scripts/render.js  out.html shot.png W H "?step=11&v=1"  # 同上，走 playwright-core（需要它时用）
 python <skill>/scripts/metric.py  ref.png shot.png                     # mean / ≤3 / ≤5 / ≤10 / ≤20 / uncovered
 python <skill>/scripts/steps.py   out.html outdir                      # 逐帧截图 + 拼版 + 单调性/空步检查
 
-# 形态二：真矢量重绘（potrace 曲线平涂，无像素矩形，适合"不要像素感"）
-python <skill>/scripts/vectorize.py ref.png out.html [K] [turdsize] [alphamax] [dilate] [blur]
-#   K=128 turdsize=12 alphamax=1.0 dilate=1 blur=0.8 为本机照片级源的最佳档
-
 # 形态三：平滑矢量的另一条路（vtracer 样条，颜色更多、路径上万）
 python <skill>/scripts/smooth_svg.py ref.png out.svg [precision] [speckle] [layer] [corner]
+
+# 形态四（特殊可选，默认不启用）：画师分层过程模拟
+# 只有当用户明确要求“作画过程 / 过程回放 / 绘画图灵测试”时才使用；
+# 平时的 SVG 交付走 vectorize.py；像素/autotune 已弃用，不要再作为默认。
+python <skill>/scripts/paint_process.py ref.png out.html --size 876x1904 --duration 58 --title "她与金线" --palette 256
+# 阶段：起稿勾线 → 铺大色 → 分区平涂 → 二分光影 → 深入细化 → 遮罩细化 → 闭塞塑形 → 藏色 → 罩染调色 → 提亮补色 → 收线高光
+# 输出 out.html + out.preview.html；支持 ?static=1&ui=0、?step=N
+# 这是算法过程模拟，页面必须保留「AI 生成 / 算法路径模拟」标注，不能包装成真人作画录像
 ```
 
-依赖：Python 3 + numpy + Pillow + scipy + potracer（曲线分支）。**截图默认 `render.py`，零依赖**——直接调系统 Edge/Chrome 的 `--headless --screenshot`，找不到时看 `BROWSER_BIN` 环境变量；`render.js`（playwright-core）只在需要它时作为备选，按 `PW_CORE` → cwd/DSH_HOME/DSH_CHECKOUT 向上找 `.pnpm/playwright-core@*`。
+依赖：Python 3 + numpy + Pillow + scipy + potracer（曲线分支）；原生 DLL 的 ctypes 绑定集中在 `scripts/native_loader.py`（两个脚本共用，缺失/DLL 报错时自动回退纯 Python，结果曲线一致：实测 Δmean 0.02）；`--full-palette` 另需 Windows x64 的 `scripts/native/palette_core.dll`，缺失会回退纯 Python 全量 median cut（很慢）；`--palette > 256` 另需 scikit-learn。**截图默认 `render.py`，零依赖**——直接调系统 Edge/Chrome 的 `--headless --screenshot`，找不到时看 `BROWSER_BIN` 环境变量；`render.js`（playwright-core）只在需要它时作为备选，按 `PW_CORE` → cwd/DSH_HOME/DSH_CHECKOUT 向上找 `.pnpm/playwright-core@*`。
 
 回归测试：`python <skill>/tests/run_tests.py`（首次基线用 `--record`）。用例 = 平涂源逐像素、照片源逐像素、照片源曲线、**透明 PNG 曲线**，断言 `uncovered` 不超基线、mean 不超基线 +1.0、以及"单文件/无位图/无渐变/有路径"四条结构检查。
 
@@ -42,18 +66,78 @@ python <skill>/scripts/smooth_svg.py ref.png out.svg [precision] [speckle] [laye
 
 > 注意渲染器影响指标：同一份 HTML 用 playwright 与 Edge CLI 各截一张，mean 相差约 1.6——所以一个项目内必须固定同一个渲染器再做横向比较。
 
-`autotune.py` 停止规则 = 「`≤5/255` 占比增益 < `--gain` 个百分点」，每档打印一行 JSON（`K/classes/paths/MB/mean/≤5/≤10/uncovered`），最后一行的 `runs` 就是交付指标表。
+`autotune.py` 停止规则 = 「`≤5/255` 占比增益 < `--gain` 个百分点」，每档打印一行 JSON（`K/classes/paths/MB/mean/≤5/≤10/uncovered`）。注意它驱动的是**已弃用的像素模式**，只作历史误差对照，不再作为默认调参入口。
 
-## 三种模式：先问清楚要哪一种
+## SVG 重绘模式（默认） + 可选过程模拟（默认不启用）
 
 同一张 750×434 照片级立绘的实测（源 `ref-girl.png`）：
 
 | 模式 | 产物 | mean | ≤5 | 观感 | 适合 |
 |---|---|---|---|---|---|
-| 像素精确（默认 `build_svg.py`） | 游程矩形 4133 path / 4.06MB | **2.16** | 96.7% | 与源几乎一致，**放大有像素台阶** | 逐像素验收、无损可缩放图 |
+| 像素精确（`build_svg.py`，**已弃用**） | 游程矩形 4133 path / 4.06MB | **2.16** | 96.7% | 与源几乎一致，**放大有像素台阶** | 仅逐像素误差对照 |
 | 真矢量（`vectorize.py`，K=192 + 2× 超采样） | 193 条曲线 path / 7.36MB / 11 步 | 8.35 | 44.6% | 平涂插画，**无台阶**，细节简化 | "要矢量感"、可缩放插画 |
-| 真矢量高保真（K=384 + 3× 超采样） | 385 条曲线 path / 19.7MB | **6.36** | 61.0% | 接近原图，暗部有层次 | 能接受 20MB 的交付 |
+| 真矢量高保真（K=384 + 3× 超采样，**最高挡**） | 385 条曲线 path / 19.7MB（750×434 源） | **6.36** | 61.0% | 接近原图，暗部有层次 | 能接受大文件的交付 |
 | vtracer 样条（`smooth_svg.py`） | 12 034 path / 3.47MB | 7.20 | 65.1% | 接近原图但极碎 | 高保真矢量化 |
+
+> 表内是 750×434 源。876×1904 的 K=384/3× 实测 **385 层 / 139.7MB / 约 50s**；尺寸不同，别把 19.7MB 当成这张图的体积。默认抽样色板与全量色板在这张图上 mean 分别是 5.4917 / 5.4885，差距很小；追求极致再用 `--full-palette`。
+
+> K 是**颜色层数**，不是绘画阶段数。过程模式的 11 个阶段是 `paint_process.py` 专有；`vectorize.py` 的 384 层是 384 个色块路径。静态 `.svg` 不写 `data-step`，只有 HTML 播放器/过程模式需要播放标记。
+
+`paint_process.py` 是**过程演示分支**，不参与上面的误差竞赛：先描线稿，再按连通色块平涂/二分/细化，脸部与手足再用遮罩裁切后单独高分辨率矢量化，最后藏色、罩染、提亮补色与收线。实测 876×1904（palette 0 烟测）：35,838 path / 26.44MB / 836 batches / 11 阶段；palette 256 仍是 28MB 量级。旧 256 色 mean 11.83 / ≤5 25.56% 是线稿层改版前的参考值，改版后未重测 mean。`--palette` 从原图采全局色板：默认 256，`512/1024` 走 k-means（需 scikit-learn，512 实测 mean 10.81 但 74,674 path），`0` 关闭。原生追踪（Windows x64）默认启用：`scripts/native/trace_core.dll`（potrace 1.16，GPL）；同尺寸 438×952 从 40.4s 降到 2.61s，876×1904/256 色生成约 10.5s；`vectorize.py` 也走同一 DLL（876×1904/K48 约 5.8s；K=384/3× 约 45s）。DLL 缺失或 `PAINT_NATIVE_TRACE=0` 时自动回退纯 Python，输出 SVG 不变。它换的是"能看懂作画顺序"，不是像素保真；静态高保真用 `vectorize.py`，像素模式已弃用。
+
+### 过程模式线稿：agent 决策，脚本执行
+
+skill 不替每张图决定“哪里是主体”。它提供 step0 线稿、区域过滤、描边、DLL 参数、`--line-only` 和验收；区域与取舍由 agent 看图写。
+
+**流程**
+
+1. 看参考图，判断“大形 / 次级结构 / 纹理细节”。
+2. 写这张图专用的 `line-direction.json`，不要复用上一张图的区域。
+3. 用 `--line-only` 只出线稿（约 1.5MB、2–3 批），看 `?step=1`。
+4. 缺哪块补哪块：只调该区域 `bbox / min_diag / density_exempt`，不要全局调一个阈值。
+5. 层级满意后再跑全量。
+
+```bash
+python scripts/paint_process.py ref.png line.html --size 876x1904 --palette 0 \
+  --line-direction line-direction.json --line-only
+python scripts/render.py line.html line-step1.png 876 1904 "?step=1&ui=0"
+
+python scripts/paint_process.py ref.png process.html --size 876x1904 --duration 58 \
+  --palette 256 --line-direction line-direction.json
+```
+
+```json
+{
+  "density_percentile": 52,
+  "default_min_diag": 34,
+  "trace": {"turdsize": 6, "alphamax": 1.0, "precision": 2},
+  "style": {"color": "#33445c", "stroke_width": 0.5,
+             "sketch_opacity": 0.95, "accent_opacity": 0.8},
+  "regions": [
+    {"name": "subject", "bbox": [0.08, 0.05, 0.92, 0.95], "min_diag": 28, "density_exempt": true},
+    {"name": "background_detail", "bbox": [0.0, 0.0, 1.0, 0.35], "min_diag": 70}
+  ]
+}
+```
+
+| 字段 | 作用 |
+|---|---|
+| `density_percentile` | 局部密度分位；越低越严格，密集线进 `line-accent`。 |
+| `default_min_diag` | 未命中区域的最小 bbox 对角线，按 876px 宽基准缩放。 |
+| `trace` | DLL 的 `turdsize / alphamax / precision`，可按图调。 |
+| `style` | 线色、线宽、起稿/收线透明度；线宽也按宽度缩放。 |
+| `regions[].bbox` | 归一化 0..1，按顺序匹配，先命中先算。 |
+| `regions[].min_diag` | 该区域最小结构；更小的进 `line-accent`。 |
+| `regions[].density_exempt` | true 时不受密度过滤，适合眼窝/鼻翼/手部结构。 |
+
+`name` 随意：人像可写 `face/hands`，风景可写 `sky/foliage`，产品可写 `label/edge`。skill 不内置任何语义区域。
+
+**线稿规则**
+
+- 线稿是 `fill="none"` 的描边，不填充；不会出现大色块填充区。
+- 起稿只放“大形 + 指定保留的小结构”；过小结构、密集纹理留到 `line-accent`。
+- 起稿层在颜色层下面，收线层在最上面；这是过程演示，不是像素保真模式。
+- 全量仍约 27–30MB；`--line-only` 只用于看线稿，不是交付文件。
 
 互斥关系要讲清楚：`uncovered=0 + mean<2` 只有像素矩形能做到（台阶是游程几何的本质）；曲线拟合必然偏离像素，所以 README 的"平涂路径 + mean<2"对照片级源**不可能同时成立**，只对平涂源成立。用户说"有像素感"就切 `vectorize.py`，并把 mean 从 2.16 变到 11.8 的代价一起说明。
 
