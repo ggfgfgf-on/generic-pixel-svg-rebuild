@@ -1,0 +1,22 @@
+{
+  "flat-pixel-K256": {
+    "mean_max": 1.0,
+    "uncovered": 0,
+    "unc_tol": 0
+  },
+  "photo-pixel-K256": {
+    "mean_max": 5.82,
+    "uncovered": 0,
+    "unc_tol": 0
+  },
+  "photo-vector-K64": {
+    "mean_max": 10.51,
+    "uncovered": 0,
+    "unc_tol": 0
+  },
+  "alpha-vector-K64": {
+    "mean_max": 3.41,
+    "uncovered": 0,
+    "unc_tol": 8
+  }
+}
