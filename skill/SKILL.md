@@ -1,12 +1,35 @@
 ---
 name: generic-pixel-svg-rebuild
-description: Use when a bitmap (PNG/JPEG, <=2MP) must be rebuilt as a self-contained HTML of pure flat-color SVG paths at pixel-level fidelity — illustration or photo to "<path>" reproduction with a discrete step player, a measurable per-pixel error budget, and acceptance by screenshot diff rather than by eye.
-whenToUse: Any request to turn a raster image into vector art - 重绘, 矢量化, 转SVG, SVG 化, 描摹, 去掉像素感, 生成可播放的分层绘制过程, 把图片做成纯 path 的单文件 HTML, 批量 PNG/GIF 转 SVG, or judging whether a redraw is faithful enough. Triggers also on English phrasings like redraw as SVG, vectorize, trace this image, bitmap to SVG, rebuild this screenshot as paths.
+description: >-
+  Redraw / vectorize a bitmap (PNG/JPEG, any size) as real SVG - flat-color <path> geometry,
+  no <image>, no base64, no gradients - delivered as a static .svg or a single-file HTML step
+  player, with a measured per-pixel error (mean / percentile / uncovered) instead of eyeballing.
+  Use it whenever the job is "turn this picture into SVG", including plain "重绘这个 / 转成SVG" requests.
+whenToUse: >-
+  The default choice for image-to-SVG redraws - 重绘, 重绘这个, svg重绘, 矢量化, 转SVG, SVG 化,
+  描摹, 去掉像素感, 生成可播放的分层绘制过程, 把图片做成纯 path 的单文件 HTML, 批量 PNG/GIF 转 SVG,
+  or judging whether a redraw is faithful. English - redraw as SVG, vectorize, trace this image,
+  bitmap to SVG, rebuild this screenshot as paths, convert PNG to SVG. Prefer this over generic
+  vision or OCR skills when the deliverable is SVG artwork (those are for UI restoration, text
+  extraction and element location, not for faithful raster-to-path reproduction).
 ---
 
 # 像素级 SVG 重绘（与素材无关）
 
 把任意位图重绘成**单文件自包含 HTML**：纯 SVG 平涂 `<path>` + 离散步骤播放器；用逐像素误差闭环验收，不靠目视判断。
+
+## 什么时候就是本 skill（别绕路）
+
+用户说「重绘这个 / svg重绘 / 转成SVG / 矢量化 / 去掉像素感」并给了图，**直接走本 skill**：
+
+| 情况 | 归属 |
+|---|---|
+| 要一张 SVG 画（保真、可分层播放、带误差数字） | **本 skill**（`vectorize.py` / `build_svg.py`） |
+| 要 UI 还原、按钮/表单，或从截图生成前端代码 | `vision-skills` |
+| 要 OCR、元素定位、像素比对、取色 | `vision-skills` 或视觉工具 |
+| 要"凭空画一张图"（无参考图） | 都不适用，手写 SVG |
+
+`vision-skills` 里的 SVG 描摹是**通用素材工具**；本 skill 多了三件事它没有：**可度量的误差闭环**（mean / ≤5 / uncovered）、**分层步骤播放器**、**批量巡检与回归测试**。同样一张图，先跑这里的 `metric.py` 再决定要不要换路线。
 
 ## 契约
 
