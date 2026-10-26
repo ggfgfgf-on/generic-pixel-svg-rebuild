@@ -7,8 +7,42 @@ Asset-agnostic pixel-level SVG reconstruction skill: turn any bitmap (PNG/JPEG, 
 
 ## Reference implementation (GPL)
 
-This fork adds `skill/`: a runnable implementation of the manual above (pixel-run and curve branches, metric loop, step verification, regression suite).
+This fork adds `skill/`: a runnable implementation of the manual above â€?pixel-run and
+curve branches, metric loop, per-step verification, regression suite.
 
-- Entry point: `skill/SKILL.md`
-- Design notes and measured results: `skill/IMPLEMENTATION.md`
-- License: GPL-2.0-or-later, because the tracing core is potrace (see `skill/NOTICE`)
+### Install
+
+Download the release zip and run the installer:
+
+```powershell
+# Windows
+Expand-Archive generic-pixel-svg-rebuild-1.0.0.zip -DestinationPath .
+.\generic-pixel-svg-rebuild\install.ps1
+```
+
+```bash
+# macOS / Linux
+unzip generic-pixel-svg-rebuild-1.0.0.zip
+./generic-pixel-svg-rebuild/install.sh
+```
+
+The installer copies the folder into `$DSH_HOME/skills/generic-pixel-svg-rebuild`
+(default `~/.dsh-home/skills`) and installs the Python deps from `requirements.txt`.
+Restart DSH afterwards and the skill is available.
+
+### Use
+
+```bash
+python <skill>/scripts/vectorize.py ref.png out.html 192   # curve redraw + step player
+python <skill>/scripts/vectorize.py ref.png out.svg  192   # static SVG
+python <skill>/scripts/metric.py   ref.png shot.png        # mean / <=5 / uncovered
+python <skill>/tests/run_tests.py                          # regression (expect PASS)
+```
+
+Entry point: `skill/SKILL.md`. Design notes and measured results: `skill/IMPLEMENTATION.md`.
+
+### License
+
+GPL-2.0-or-later: the tracing core is potrace, both as the compiled `trace_core.dll`
+and as the pure-Python `potracer` fallback. See `skill/NOTICE` for the exact split.
+`vtracer` (smooth mode) is MIT and outside the GPL path.
