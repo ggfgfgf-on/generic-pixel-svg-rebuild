@@ -1,0 +1,8 @@
+# Core (needed by every mode)
+numpy>=1.24
+Pillow>=10.0
+scipy>=1.10
+potracer>=1.0          # GPL-2.0-or-later: the curve tracer (pure-Python potrace port)
+
+# Optional
+# vtracer>=0.6         # MIT: alternative smooth tracer used by scripts/smooth_svg.py
