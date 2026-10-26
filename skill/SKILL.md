@@ -1,6 +1,7 @@
 ---
 name: generic-pixel-svg-rebuild
 description: Use when a bitmap (PNG/JPEG, <=2MP) must be rebuilt as a self-contained HTML of pure flat-color SVG paths at pixel-level fidelity — illustration or photo to "<path>" reproduction with a discrete step player, a measurable per-pixel error budget, and acceptance by screenshot diff rather than by eye.
+whenToUse: Any request to turn a raster image into vector art - 重绘, 矢量化, 转SVG, SVG 化, 描摹, 去掉像素感, 生成可播放的分层绘制过程, 把图片做成纯 path 的单文件 HTML, 批量 PNG/GIF 转 SVG, or judging whether a redraw is faithful enough. Triggers also on English phrasings like redraw as SVG, vectorize, trace this image, bitmap to SVG, rebuild this screenshot as paths.
 ---
 
 # 像素级 SVG 重绘（与素材无关）
