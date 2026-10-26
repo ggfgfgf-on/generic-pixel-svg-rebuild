@@ -38,7 +38,7 @@ The implementation therefore exposes two branches with separate acceptance budge
 
 ### Painterly process branch (new)
 
-`paint_process.py` is a **process replay** branch, not a pixel-fidelity competitor. It traces coherent colour regions and line masks instead of scattering random dabs, then replays eleven illustration-workflow phases: sketch/ink, flat fill, mid block, two-tone shadow, detail, mask refinement, occlusion, undertone colour, glaze, lift/colour-accent and final inking. The page is still one self-contained HTML with pure SVG paths, no image/base64/gradient/`url(#`/CSS transition.
+`paint_process.py` is a **process replay** branch, not a pixel-fidelity competitor. It traces coherent colour regions and line masks instead of scattering random dabs, then replays eleven illustration-workflow phases: sketch/ink, flat fill, mid block, two-tone shadow, detail, mask refinement, occlusion, undertone colour, glaze, lift/colour-accent and final inking. The page is still one self-contained HTML with pure SVG paths, no image/base64/gradient/CSS transition. The only `url(#)` is the optional edge-soften filter described below.
 
 Measured on the 876x1904 test source:
 
@@ -61,7 +61,17 @@ The JSON also exposes the native trace parameters (`turdsize / alphamax / precis
 
 The painter and vector branches use an optional Windows x64 native tracing DLL (`scripts/native/trace_core.dll`, potrace 1.16) and fall back to pure Python. At 438x952/256 the render drops from 40.4s to 2.61s; the full 876x1904/256 render is about 10.5s.
 
-A global palette is sampled from the reference and reused by every layer. `--palette 256` (the default) uses median cut; `--palette 512`/`1024` uses MiniBatchKMeans (scikit-learn) for a larger source palette; `--palette 0` restores per-layer median cut. A 512-colour test lowered mean error to 10.81 but raised the file to 74,674 paths / 29.0 MB, so the shipped playback file stays at 256 for weight. A mild saturation/contrast lift, plus explicit undertone (cool shadows) and lift/colour-accent (warm lights, red/green accents) phases reduce the washed-out look without changing the default branches. This branch deliberately trades pixel error for a readable making-of sequence. Use `build_svg.py` for pixel fidelity and `vectorize.py` for a static curve reproduction.
+#### Final-only bridge and optional edge-soften
+
+The process algorithm is also callable as a **final-only** renderer: `build_painterly_batches()` returns the same batch sequence, and `build_final_static_svg()` flattens it to one static SVG (base, mid, shadow, detail, occlusion, undertone, glaze, colour grade, final line accent). It drops `data-step`/`data-total`, the mask overlay and the player, and keeps the line accent at its final opacity. On the 876x1904 test source the rendered PNG is byte-identical to the extracted process final; only title/provenance differs.
+
+`--process-final` (default off) uses this path from `vectorize.py`; `--process-palette=N` defaults to 256 (or the positional K when supplied), and `--process-line-direction=FILE` is the same per-image JSON. Output `.svg` for a static SVG or `.html` for a minimal static page. The previously hard-coded trace controls are now explicit, with the old values as defaults: `--process-base-scale=0.34`, `--process-mid-scale=0.52`, `--process-detail-scale=0.85`, `--process-min-areas=24,8,2`, `--process-blurs=1.0,0.5,0.18`, `--process-focus-box=0.10,0.08,0.90,0.92`, `--process-focus=1.0,4,0,1`, `--process-dil=1`, `--process-turd=1`, `--process-alphamax=1.0`, `--process-ss=1.0`. `--process-from-front` is on by default: it copies the positional `turd/alphamax/dil` into the process options (`dil` into both region and focus), copies `ss` only when no explicit `--process-*-scale` is present, and inherits `--full-palette` plus an explicit `--palette-sample`. The process palette has its own full-pixel switch: `--process-full-palette` (or `--process-palette-sample=0`) fits the >256-colour k-means on every pixel, `--process-palette-sample=N` sets the sample budget (default 80,000), and `--no-process-full-palette` opts out of the inherited flag. The colour ceiling is `--process-palette-max=N` (default 1024; direct `paint_process.py` CLI: `--palette-max=N`), threaded into `make_global_palette(..., max_colors=N)`; values above it fail before tracing. Explicit `--process-*` wins; `--no-process-from-front` restores the fixed old behaviour (`blur` remains per-layer; `sk_thr/dark_k/med` have no process analogue). With `--no-process-from-front`, the old fixed defaults produce 54,887 paths and mean 11.8843; 0.50/0.75/1.25 with `--process-turd=6` produces 103,991 paths, 29.72 MB after compaction, mean 10.8098, raises the face edge-density from 34.31% to 34.70%, and raises headless render time from about 3.0 s to 7.0 s. The normal 192/2x trace remains sharper at mean 8.7141, so this is a knob for the process look, not a fidelity replacement. At the same 384-colour/0.50/0.75/1.25 setting, full-pixel k-means gives 104,841 paths, 29.57 MB, mean 10.7668, face edge density 35.03%, and 6.9 s headless; the 80k sample gives 103,991 paths, 29.72 MB, mean 10.8098, 34.69%, and 7.0 s. The full path is therefore a small quality gain, not a different league.
+
+`--edge-soften=SIGMA` (default 0/off) is a separate post-process, not a tracer change: it injects one `feGaussianBlur` filter and wraps the artwork, leaving path coordinates untouched. It is applied last, so `--seal` is skipped with a warning. `svg_postprocess.py --soften N` can soften an existing file. This reduces the visual staircase at high zoom but cannot restore geometric resolution; use `ss=3` when true high-zoom geometry matters.
+
+**Lossless compaction (`--compact`).** `svg_compact.py` rewrites absolute `M/L/C/Z` runs to relative `m/l/c/z` and drops per-path `shape-rendering` when the root already declares it. It does not delete paths, reorder layers, or touch fills/opacity/fill-rule. On the 876x1904 process final: 28,550,352 -> 18,121,227 bytes (-36.5%), headless render 2.92 s -> 2.39 s, and a 0.0213/255 mean pixel difference (relative-coordinate float/antialias noise, not a geometry change). This is the compression that pays off; full occlusion culling was measured at only 954 / 50,927 paths (1.9%, <0.4 MB saved) because most detail paths are partially visible, and topmost flattening to 192 paths costs mean 8.43/255, so it is not a lossless default.
+
+A global palette is sampled from the reference and reused by every layer. `--palette 256` (the default) uses median cut; `--palette 512`/`1024` uses MiniBatchKMeans (scikit-learn) for a larger source palette; `--palette 0` restores per-layer median cut. Above 256 colours the k-means fit defaults to an 80,000-pixel sample; `--palette-full` (or `--palette-sample=0`) uses every pixel and `--palette-sample=N` sets the budget. A 512-colour test lowered mean error to 10.81 but raised the file to 74,674 paths / 29.0 MB, so the shipped playback file stays at 256 for weight. A mild saturation/contrast lift, plus explicit undertone (cool shadows) and lift/colour-accent (warm lights, red/green accents) phases reduce the washed-out look without changing the default branches. This branch deliberately trades pixel error for a readable making-of sequence. Use `build_svg.py` for pixel fidelity and `vectorize.py` for a static curve reproduction.
 
 ## What the implementation adds beyond the manual
 
@@ -87,8 +97,11 @@ A global palette is sampled from the reference and reused by every layer. `--pal
 8. **Zero-dependency screenshots.** `render.py` drives system Edge/Chrome
    (`--headless=new --screenshot`); no Playwright required.
 9. **Regression suite.** `tests/run_tests.py` rebuilds three synthetic fixtures
-   (flat / photo-like / transparent cutout) and asserts structure plus a recorded error
-   budget, so a change that silently degrades quality fails the run.
+   (flat / photo-like / transparent cutout) into ten cases: two pixel, four curve
+   (including `--edge-soften` and `--compact`), and four process-final (default,
+   configurable trace scales/focus, from-front inheritance, and full-pixel palette). It asserts
+   structure plus a recorded error budget, so a change that silently degrades quality
+   fails the run.
 
 ## Measurement discipline
 
@@ -108,6 +121,18 @@ source is not pure white there. For alpha sources, only pixels with `alpha >= 25
     python scripts/vectorize.py  ref.png out.html 384 6 1.0 1 0.4 3 0 --full-palette
     # deprecated pixel branch, kept only for the old mean<2 reference:
     # python scripts/build_svg.py ref.png out.html 4096 8
+    # process algorithm, final-only static SVG (default off)
+    python scripts/vectorize.py ref.png process-final.svg --process-final --process-palette=256 --process-line-direction line-direction.json
+    # old fixed process behavior (pre-from-front): add --no-process-from-front
+    # process final with higher trace scales (bigger/slower, more detail)
+    python scripts/vectorize.py ref.png process-hd.svg 384 6 1.0 1 0.4 1 0 \
+      --process-final --process-base-scale=0.5 --process-mid-scale=0.75 \
+      --process-detail-scale=1.25 --process-turd=6 --edge-soften=0.35 --compact
+    # optional edge soften (default off; true geometry still needs ss=3)
+    python scripts/vectorize.py ref.png out-soft.svg 192 6 1.0 1 0.4 2 0 --edge-soften=0.35
+    # optional lossless compaction (default off; can combine with both above)
+    python scripts/vectorize.py ref.png out-compact.svg 192 6 1.0 1 0.4 2 0 --compact
+    python scripts/svg_compact.py out.svg out-compact.svg
     python scripts/paint_process.py ref.png process.html --size 876x1904 --duration 58 --line-direction line-direction.json
     python scripts/paint_process.py ref.png line.html --size 876x1904 --palette 0 --line-direction line-direction.json --line-only
     python scripts/render.py     out.preview.html shot.png 1200 675 "?step=11"

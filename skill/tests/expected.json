@@ -18,5 +18,35 @@
     "mean_max": 3.41,
     "uncovered": 0,
     "unc_tol": 8
+  },
+  "photo-vector-soften": {
+    "mean_max": 10.52,
+    "uncovered": 0,
+    "unc_tol": 0
+  },
+  "photo-vector-compact": {
+    "mean_max": 10.52,
+    "uncovered": 0,
+    "unc_tol": 0
+  },
+  "photo-process-final": {
+    "mean_max": 14.7,
+    "uncovered": 0,
+    "unc_tol": 0
+  },
+  "photo-process-final-detail": {
+    "mean_max": 14.66,
+    "uncovered": 0,
+    "unc_tol": 0
+  },
+  "photo-process-final-from-front": {
+    "mean_max": 30.31,
+    "uncovered": 0,
+    "unc_tol": 0
+  },
+  "photo-process-final-full-palette": {
+    "mean_max": 9.49,
+    "uncovered": 0,
+    "unc_tol": 0
   }
 }

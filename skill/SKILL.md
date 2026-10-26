@@ -35,11 +35,12 @@ whenToUse: >-
 
 - 输入：PNG/JPEG，宽×高 ≤ 2MP。JPEG 先解码并**固化无损副本**，之后所有比较只对这份副本（解码器不同结果不同）。
 - 输出：`out.html`（播放器）+ `out.preview.html`（同图全量、无 UI，几何评测专用）。`viewBox="0 0 W H"`，每个颜色类一组带 `data-step` 的 `<path>`，内联 JS 播放器（`?step=N` 直达，`data-total` 记录总步数）。
-- 禁止：Canvas、位图/base64 内嵌、外链、`<linearGradient>`/`url(#`、任何 CSS transition、抗锯齿（必须 `shape-rendering="crispEdges"`）。
+- 禁止：Canvas、位图/base64 内嵌、外链、渐变（`<linearGradient>`/`<radialGradient>`/`fill|stroke="url(...)"`）、任何 CSS transition。像素分支必须 `shape-rendering="crispEdges"`；曲线分支用 `geometricPrecision`。
+- 可选后处理 `--edge-soften=N` 会引入一个 `feGaussianBlur` 滤镜，是唯一的 `url(#)` 例外，默认关闭；它不改变路径几何。
 
 ## 脚本（A→G 全链路已固化）
 
-**默认用 `vectorize.py` 做 SVG 重绘；`build_svg.py` 的像素矩形模式已弃用**，只保留作逐像素误差参考，不再作为默认或交付。`paint_process.py` 是显式可选分支，用户没有点名“作画过程 / 回放”时不要调用。
+**默认用 `vectorize.py` 做 SVG 重绘；`build_svg.py` 的像素矩形模式已弃用**，只保留作逐像素误差参考，不再作为默认或交付。`paint_process.py` 是显式可选分支，用户没有点名“作画过程 / 回放”时不要调用；但 `vectorize.py --process-final` 可复用它的**最终画面算法**（默认关闭，无回放）。
 
 ```bash
 # 默认：SVG 矢量重绘（最高挡 K=384 / 3× 超采样）
@@ -57,6 +58,33 @@ python <skill>/scripts/vectorize.py ref.png out.svg 128 6 1.0 1 0.4 1 0
 # 只填"细"缝（距离变换 ≤1.5px）和小噪点；要求有不透明底色 rect，透明图会明确跳过
 python <skill>/scripts/vectorize.py ref.png out.html 128 6 1.0 0 0.4 1 0 --seal
 python <skill>/scripts/seal_gaps.py out.svg shot.png out-sealed.svg   # 也可独立对已有产物跑
+
+# 可选边缘后处理（默认关闭）：feGaussianBlur 柔化最终边缘，不改变几何；sigma 约 0.15~0.6
+python <skill>/scripts/vectorize.py ref.png out.svg 192 6 1.0 1 0.4 2 0 --edge-soften=0.35
+python <skill>/scripts/svg_postprocess.py out.svg out-soft.svg --soften 0.35
+# 注意：--edge-soften 与 --seal 同用时，seal 会跳过（柔化必须是最后一层）
+
+# 过程算法只出 final（默认关闭）：不生成批次/播放器，只把最终画面写成静态 SVG
+python <skill>/scripts/vectorize.py ref.png final.svg --process-final --process-palette=256 \
+  --process-line-direction=line-direction.json
+# 过程 final 的追踪参数全部可调，这些是参数自身的默认值：
+#   --process-base-scale=0.34 --process-mid-scale=0.52 --process-detail-scale=0.85
+#   --process-min-areas=24,8,2  --process-blurs=1.0,0.5,0.18
+#   --process-focus-box=0.10,0.08,0.90,0.92 --process-focus=1.0,4,0,1
+#   --process-dil=1 --process-turd=1 --process-alphamax=1.0 --process-ss=1.0
+# --process-from-front 默认开启：继承前排 turd/alphamax/dil/ss，以及 --full-palette /
+# 显式 --palette-sample。显式 --process-* 优先；显式给了 --process-*-scale 时不再乘 ss。
+# blur 不继承（过程是逐层 1.0/0.5/0.18）；sk_thr/dark_k/med 没有过程对应。
+# 旧版固定行为复现加 --no-process-from-front；要显式控制倍率用 --process-ss=N。
+# 过程全像素色板：--process-full-palette（等价 --process-palette-sample=0）；
+# 也可 --process-palette-sample=N 指定抽样像素；--no-process-full-palette 关闭继承。
+# 色数上限默认 1024：--process-palette-max=N（paint_process.py 直连用 --palette-max=N）。
+# <=256 色无论是否 full 都用整图 PIL median cut。
+
+# 无损压缩（默认关闭）：绝对路径改相对坐标、去掉重复属性；不删路径、不改几何
+python <skill>/scripts/vectorize.py ref.png out.svg 192 6 1.0 1 0.4 2 0 --compact
+python <skill>/scripts/svg_compact.py out.svg out-compact.svg
+# 可与 --process-final / --edge-soften 组合；--compact-precision=N 控制小数位（默认 6）
 
 # 极致色板：全量像素做 median cut（Windows x64 原生 palette_core.dll）
 # 默认是抽样 24 万像素 + cKDTree 全量分配；--palette-sample=N 可调抽样数
@@ -84,7 +112,7 @@ python <skill>/scripts/paint_process.py ref.png out.html --size 876x1904 --durat
 
 依赖：Python 3 + numpy + Pillow + scipy + potracer（曲线分支）；原生 DLL 的 ctypes 绑定集中在 `scripts/native_loader.py`（两个脚本共用，缺失/DLL 报错时自动回退纯 Python，结果曲线一致：实测 Δmean 0.02）；`--full-palette` 另需 Windows x64 的 `scripts/native/palette_core.dll`，缺失会回退纯 Python 全量 median cut（很慢）；`--palette > 256` 另需 scikit-learn。**截图默认 `render.py`，零依赖**——直接调系统 Edge/Chrome 的 `--headless --screenshot`，找不到时看 `BROWSER_BIN` 环境变量；`render.js`（playwright-core）只在需要它时作为备选，按 `PW_CORE` → cwd/DSH_HOME/DSH_CHECKOUT 向上找 `.pnpm/playwright-core@*`。
 
-回归测试：`python <skill>/tests/run_tests.py`（首次基线用 `--record`）。用例 = 平涂源逐像素、照片源逐像素、照片源曲线、**透明 PNG 曲线**，断言 `uncovered` 不超基线、mean 不超基线 +1.0、以及"单文件/无位图/无渐变/有路径"四条结构检查。
+回归测试：`python <skill>/tests/run_tests.py`（首次基线用 `--record`）。用例 = 平涂源逐像素、照片源逐像素、照片源曲线、**透明 PNG 曲线**、**曲线 + 边缘柔化**、**曲线 + 无损压缩**、**过程算法 final + 压缩**、**过程算法 final 可调追踪参数**、**过程算法 final 从前排继承**、**过程算法 final 全像素色板**；断言 `uncovered` 不超基线、mean 不超基线 +1.0，以及"单文件/无位图/无渐变（可选柔化滤镜除外）/有路径"四条结构检查。
 
 透明图的 uncovered 口径不同：只统计**源图 alpha≥250 的像素**里被渲染成纯白的部分（alpha 128~249 是抗锯齿描边，本来就该柔化），并允许 ≤8 px 的孤立噪点（turdsize 会丢弃 alpha>250 的零星碎片）。
 
@@ -107,7 +135,17 @@ python <skill>/scripts/paint_process.py ref.png out.html --size 876x1904 --durat
 
 > K 是**颜色层数**，不是绘画阶段数。过程模式的 11 个阶段是 `paint_process.py` 专有；`vectorize.py` 的 384 层是 384 个色块路径。静态 `.svg` 不写 `data-step`，只有 HTML 播放器/过程模式需要播放标记。
 
-`paint_process.py` 是**过程演示分支**，不参与上面的误差竞赛：先描线稿，再按连通色块平涂/二分/细化，脸部与手足再用遮罩裁切后单独高分辨率矢量化，最后藏色、罩染、提亮补色与收线。实测 876×1904（palette 0 烟测）：35,838 path / 26.44MB / 836 batches / 11 阶段；palette 256 仍是 28MB 量级。旧 256 色 mean 11.83 / ≤5 25.56% 是线稿层改版前的参考值，改版后未重测 mean。`--palette` 从原图采全局色板：默认 256，`512/1024` 走 k-means（需 scikit-learn，512 实测 mean 10.81 但 74,674 path），`0` 关闭。原生追踪（Windows x64）默认启用：`scripts/native/trace_core.dll`（potrace 1.16，GPL）；同尺寸 438×952 从 40.4s 降到 2.61s，876×1904/256 色生成约 10.5s；`vectorize.py` 也走同一 DLL（876×1904/K48 约 5.8s；K=384/3× 约 45s）。DLL 缺失或 `PAINT_NATIVE_TRACE=0` 时自动回退纯 Python，输出 SVG 不变。它换的是"能看懂作画顺序"，不是像素保真；静态高保真用 `vectorize.py`，像素模式已弃用。
+### 三个默认关闭的可选开关
+
+**`--edge-soften=SIGMA`：边缘柔化后处理。** 它直接作用于已完成 SVG（或 HTML 里的 SVG），只增加一个 `feGaussianBlur` 和一层包装，不改路径坐标、不改层序。适合“放大很多倍不要让 1px 阶梯很扎眼”的交付；副作用是整体轻微变软。想真正提高轮廓分辨率，应该提高 `ss`（如 3×），`--edge-soften` 只是最终视觉后处理。`svg_postprocess.py` 可独立对已有 SVG 跑，参数为 `--soften N`。
+
+**`--process-final`：用过程模式算法只出最终图。** 默认关闭；打开后不执行普通颜色层描摹，而是调用 `paint_process.py` 的同一套平涂/二分/细化/罩染/收线算法，直接输出静态 SVG。不生成 11 阶段、884 批次、播放器或 `data-step`。可选 `--process-palette=N`（默认 256；若给了位置参数 K 则用 K）和 `--process-line-direction=FILE`。`--process-palette` 为 257–上限（默认 1024，可用 `--process-palette-max=N` 提高）时默认只在约 8 万像素上拟合 k-means；`--process-full-palette` 或 `--process-palette-sample=0` 改为全部像素，`--process-palette-sample=N` 指定抽样像素。同一张图、同一 palette/线稿参数下，最终画面与过程模式的完成帧一致；区别只是没有过程。输出 `.svg` 得到静态 SVG，输出 `.html` 得到无播放器的静态 HTML。
+
+过程 final 的追踪参数现在全部暴露；参数自身默认值仍是 `--process-base-scale/--process-mid-scale/--process-detail-scale`（0.34/0.52/0.85，1.0=原图分辨率）、`--process-min-areas=24,8,2`、`--process-blurs=1.0,0.5,0.18`、`--process-focus-box=0.10,0.08,0.90,0.92`、`--process-focus=scale,min_area,blur,dil`（1.0,4,0,1）、`--process-dil=1`、`--process-turd=1`、`--process-alphamax=1.0`、`--process-ss=1.0`。`--process-from-front` **默认开启**：自动把普通模式前面的 `turd/alphamax/dil` 继承到过程层（`dil` 同时用于 region 和 focus），`ss` 只在没有显式给任何 `--process-*-scale` 时作为统一倍率继承，`--full-palette` 和显式 `--palette-sample` 也会继承；显式 `--process-*` 始终优先，`--no-process-from-front` 回到旧版固定值。`blur` 不继承（过程是逐层 1.0/0.5/0.18），`sk_thr/dark_k/med` 没有过程对应。`--process-min-areas` 是过程版的碎块过滤（角色类似普通模式的 `turd`），`--process-turd` 则直接传给 Potrace。实测 876×1904、384 色：旧版固定行为（`--no-process-from-front`）为 54,887 path、mean 11.8843；显式 0.50/0.75/1.25 + `--process-turd=6` 为 103,991 path、压缩后 29.72MB，mean 10.8098，脸部边缘密度 34.31%→34.70%；同一无头渲染约 3.0s→7.0s，所以它是“细节换速度”，不是压缩提速版。同一组 0.50/0.75/1.25 + 384 色下，全像素色板为 104,841 path / 29.57MB / mean 10.7668 / 脸部边缘 35.03% / 6.9s，抽样色板为 103,991 path / 29.72MB / mean 10.8098 / 34.69% / 7.0s；全像素只值这么一点，别指望质变。
+
+**`--compact`：无损路径数据压缩。** 默认关闭；把 `M/L/C/Z` 绝对坐标改写成相对坐标、去掉每个 path 上重复的 `shape-rendering`，**不删路径、不改层序、不改 fill/opacity/fill-rule**。实测 876×1904 过程 final：28,550,352 → 18,121,227 字节（-36.5%），渲染 2.92s → 2.39s，逐像素 mean 0.0213/255（只是相对坐标的浮点抗锯齿差，不是几何变化）。它不解决“被完全遮住的 path”问题：同一文件全遮挡剪枝只找到 954 / 50,927 条（1.9%），单独做遮挡剪枝省不到 0.4MB；把 topmost 画面重描成 192 条 path 虽然能到 20.4MB，但 mean 8.43/255，不算无损，所以没有默认启用。
+
+`paint_process.py` 是**过程演示分支**，不参与上面的误差竞赛：先描线稿，再按连通色块平涂/二分/细化，脸部与手足再用遮罩裁切后单独高分辨率矢量化，最后藏色、罩染、提亮补色与收线。实测 876×1904（palette 0 烟测）：35,838 path / 26.44MB / 836 batches / 11 阶段；palette 256 仍是 28MB 量级。旧 256 色 mean 11.83 / ≤5 25.56% 是线稿层改版前的参考值，改版后未重测 mean。`--palette` 从原图采全局色板：默认 256，`512/1024` 走 k-means（需 scikit-learn，512 实测 mean 10.81 但 74,674 path），`0` 关闭；257 色以上默认在约 8 万像素上拟合，`--palette-full`/`--palette-sample=0` 改为全像素，`--palette-sample=N` 指定抽样像素；色数硬上限默认 1024，可用 `--palette-max=N` 提高。原生追踪（Windows x64）默认启用：`scripts/native/trace_core.dll`（potrace 1.16，GPL）；同尺寸 438×952 从 40.4s 降到 2.61s，876×1904/256 色生成约 10.5s；`vectorize.py` 也走同一 DLL（876×1904/K48 约 5.8s；K=384/3× 约 45s）。DLL 缺失或 `PAINT_NATIVE_TRACE=0` 时自动回退纯 Python，输出 SVG 不变。它换的是"能看懂作画顺序"，不是像素保真；静态高保真用 `vectorize.py`，像素模式已弃用。
 
 ### 过程模式线稿：agent 决策，脚本执行
 

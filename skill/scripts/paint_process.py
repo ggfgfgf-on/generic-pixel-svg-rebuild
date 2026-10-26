@@ -22,6 +22,7 @@ import random
 import re
 import sys
 from pathlib import Path
+from xml.sax.saxutils import escape
 
 import numpy as np
 import potrace
@@ -39,9 +40,95 @@ def parse_size(text):
     return int(a), int(b)
 
 
+def parse_csv(text, count, name):
+    parts = [p for p in text.replace(" ", "").split(",") if p]
+    if len(parts) != count:
+        raise SystemExit("%s needs %d comma-separated values" % (name, count))
+    try:
+        return tuple(float(p) for p in parts)
+    except ValueError:
+        raise SystemExit("%s must contain numbers" % name)
+
+
 def hex_color(rgb):
     r, g, b = (max(0, min(255, int(round(v)))) for v in rgb)
     return "#%02x%02x%02x" % (r, g, b)
+
+DEFAULT_PROCESS_OPTIONS = {
+    "base_scale": 0.34, "mid_scale": 0.52, "detail_scale": 0.85,
+    "base_min_area": 24, "mid_min_area": 8, "detail_min_area": 2,
+    "base_blur": 1.0, "mid_blur": 0.5, "detail_blur": 0.18,
+    "focus_box": (0.10, 0.08, 0.90, 0.92),
+    "focus_scale": 1.0,
+    "focus_min_area": 4,
+    "focus_blur": 0.0,
+    "focus_dil": 1,
+    "dil": 1,
+    "turd": 1,
+    "alphamax": 1.0,
+    "ss": 1.0,
+}
+SCALE_MIN, SCALE_MAX = 0.1, 2.0
+SS_MIN, SS_MAX = 0.25, 3.0
+EFFECTIVE_SCALE_MAX = 3.0
+
+
+def normalize_process_options(options=None):
+    """Validate the painterly trace controls, preserving the old defaults."""
+    out = dict(DEFAULT_PROCESS_OPTIONS)
+    if options:
+        for key, value in options.items():
+            if key not in out:
+                raise ValueError("unknown process option: %s" % key)
+            if value is not None:
+                out[key] = value
+    for key in ("base_scale", "mid_scale", "detail_scale", "focus_scale"):
+        value = float(out[key])
+        if not (SCALE_MIN <= value <= SCALE_MAX):
+            raise ValueError("%s must be %.2f..%.2f" % (key, SCALE_MIN, SCALE_MAX))
+        out[key] = value
+    for key in ("base_blur", "mid_blur", "detail_blur", "focus_blur"):
+        value = float(out[key])
+        if value < 0:
+            raise ValueError("%s must be >= 0" % key)
+        out[key] = value
+    for key in ("base_min_area", "mid_min_area", "detail_min_area", "focus_min_area",
+                "focus_dil", "dil", "turd"):
+        raw = float(out[key])
+        value = int(raw)
+        if raw != value:
+            raise ValueError("%s must be an integer" % key)
+        if value < 0:
+            raise ValueError("%s must be >= 0" % key)
+        out[key] = value
+    out["alphamax"] = float(out["alphamax"])
+    if not (0.0 <= out["alphamax"] <= 1.334):
+        raise ValueError("alphamax must be 0..1.334")
+    out["ss"] = float(out["ss"])
+    if not (SS_MIN <= out["ss"] <= SS_MAX):
+        raise ValueError("ss must be %.2f..%.2f" % (SS_MIN, SS_MAX))
+    box = out["focus_box"]
+    if isinstance(box, str):
+        box = tuple(float(v) for v in box.replace(" ", "").split(","))
+    box = tuple(float(v) for v in box)
+    if len(box) != 4 or not (0.0 <= box[0] < box[2] <= 1.0 and 0.0 <= box[1] < box[3] <= 1.0):
+        raise ValueError("focus_box must be x0,y0,x1,y1 with 0<=x0<x1<=1 and 0<=y0<y1<=1")
+    out["focus_box"] = box
+    for key in ("base_scale", "mid_scale", "detail_scale", "focus_scale"):
+        if out[key] * out["ss"] > EFFECTIVE_SCALE_MAX:
+            raise ValueError("%s * ss must be <= %.2f" % (key, EFFECTIVE_SCALE_MAX))
+    return out
+
+
+def normalize_layer_scales(layer_scales=None):
+    """Backward-compatible scale-only view used by older callers."""
+    mapped = {}
+    for key, value in (layer_scales or {}).items():
+        if key not in ("base", "mid", "detail"):
+            raise ValueError("unknown process layer scale: %s" % key)
+        mapped["%s_scale" % key] = value
+    opts = normalize_process_options(mapped)
+    return {key: opts["%s_scale" % key] for key in ("base", "mid", "detail")}
 
 
 def load_reference(path, size, max_pixels):
@@ -81,24 +168,18 @@ def path_from_curve(curve, sx, sy, ox, oy, prec=1):
     return "".join(d)
 
 
-def trace_mask(mask, sx, sy, ox, oy):
+def trace_mask(mask, sx, sy, ox, oy, turd=1, alphamax=1.0, prec=1):
     """Native DLL when available, otherwise the pure Python tracer (same curves)."""
-    d = native_loader.trace_mask(mask, sx, sy, ox, oy, turdsize=1, alphamax=1.0, prec=1)
+    d = native_loader.trace_mask(mask, sx, sy, ox, oy, turdsize=turd, alphamax=alphamax, prec=prec)
     if d is not None:
         return d
     bmp = potrace.Bitmap(~mask)
-    tr = bmp.trace(turdsize=1, alphamax=1.0, opticurve=True, opttolerance=0.2)
-    return "".join(path_from_curve(cv, sx, sy, ox, oy) for cv in tr)
-
+    tr = bmp.trace(turdsize=turd, alphamax=alphamax, opticurve=True, opttolerance=0.2)
+    return "".join(path_from_curve(cv, sx, sy, ox, oy, prec=prec) for cv in tr)
 
 
 def trace_mask_turd(mask, sx, sy, ox, oy, turdsize=6, alphamax=1.0, prec=1):
-    d = native_loader.trace_mask(mask, sx, sy, ox, oy, turdsize, alphamax, prec)
-    if d is not None:
-        return d
-    bmp = potrace.Bitmap(~mask)
-    tr = bmp.trace(turdsize=turdsize, alphamax=alphamax, opticurve=True, opttolerance=0.2)
-    return "".join(path_from_curve(cv, sx, sy, ox, oy, prec=prec) for cv in tr)
+    return trace_mask(mask, sx, sy, ox, oy, turd=turdsize, alphamax=alphamax, prec=prec)
 def focus_value(cx, cy, W, H):
     # Generic central-subject prior; no face/hand/foot assumption. Per-image
     # focus regions can replace this when the skill grows a focus config.
@@ -114,7 +195,8 @@ def map_to_palette(im, palette):
     return idx.reshape(arr.shape[:2]).astype(np.int16)
 
 
-def component_batches_for_regions(img, W, H, kind, scale, colors, min_area, blur, target, palette=None):
+def component_batches_for_regions(img, W, H, kind, scale, colors, min_area, blur, target, palette=None,
+                                  dil=1, turd=1, alphamax=1.0):
     sw, sh = max(1, round(W * scale)), max(1, round(H * scale))
     small = img.resize((sw, sh), Image.LANCZOS)
     if blur > 0:
@@ -144,8 +226,9 @@ def component_batches_for_regions(img, W, H, kind, scale, colors, min_area, blur
             y0 = max(0, sl[0].start - 2); y1 = min(sh, sl[0].stop + 2)
             x0 = max(0, sl[1].start - 2); x1 = min(sw, sl[1].stop + 2)
             crop = labels[y0:y1, x0:x1] == cid
-            crop = ndi.binary_dilation(crop, iterations=1)
-            d = trace_mask(crop, sx, sy, x0, y0)
+            if dil:
+                crop = ndi.binary_dilation(crop, iterations=int(dil))
+            d = trace_mask(crop, sx, sy, x0, y0, turd=turd, alphamax=alphamax)
             if not d:
                 continue
             bbox = (x0 * sx, y0 * sy, x1 * sx, y1 * sy)
@@ -445,61 +528,67 @@ def mask_ui_svg(W, H):
 
 
 
-def component_batches_for_focus(img, W, H, palette=None):
-    # Generic subject box; replace per image when a real focus config is added.
-    specs = [
-        ("subject", 0.10, 0.08, 0.90, 0.92, 96, 4),
-    ]
-    out = []
-    for tag, nx0, ny0, nx1, ny1, colors, min_area in specs:
-        x0, y0 = int(round(nx0 * W)), int(round(ny0 * H))
-        x1, y1 = int(round(nx1 * W)), int(round(ny1 * H))
-        crop = img.crop((x0, y0, x1, y1))
-        cw, ch = crop.size
-        if palette is not None:
-            if palette.get("pil") is not None:
-                q = crop.quantize(palette=palette["pil"], dither=Image.Dither.NONE)
-                idx = np.asarray(q, dtype=np.int16)
-            else:
-                idx = map_to_palette(crop, palette["pal"])
-            pal = palette["pal"]
-        else:
-            q = crop.quantize(colors=colors, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
+def component_batches_for_focus(img, W, H, palette=None, box=(0.10, 0.08, 0.90, 0.92),
+                                scale=1.0, min_area=4, blur=0.0, dil=1,
+                                turd=1, alphamax=1.0):
+    """Trace the subject crop at full resolution (or a configurable scale)."""
+    x0, y0 = int(round(box[0] * W)), int(round(box[1] * H))
+    x1, y1 = int(round(box[2] * W)), int(round(box[3] * H))
+    crop = img.crop((x0, y0, x1, y1))
+    cw, ch = crop.size
+    sw, sh = max(1, round(cw * scale)), max(1, round(ch * scale))
+    if (sw, sh) != (cw, ch):
+        crop = crop.resize((sw, sh), Image.LANCZOS)
+    if blur > 0:
+        crop = crop.filter(ImageFilter.GaussianBlur(blur))
+    if palette is not None:
+        if palette.get("pil") is not None:
+            q = crop.quantize(palette=palette["pil"], dither=Image.Dither.NONE)
             idx = np.asarray(q, dtype=np.int16)
-            pal = np.asarray(q.getpalette()[:256 * 3], dtype=np.uint8).reshape(-1, 3)
-        comps = []
-        for c in np.unique(idx).tolist():
-            mask = idx == int(c)
-            labels, n = ndi.label(mask, structure=np.ones((3, 3), dtype=np.uint8))
-            for cid, sl in enumerate(ndi.find_objects(labels), start=1):
-                if sl is None:
-                    continue
-                area = int((labels[sl] == cid).sum())
-                if area < min_area:
-                    continue
-                cy0 = max(0, sl[0].start - 2); cy1 = min(ch, sl[0].stop + 2)
-                cx0 = max(0, sl[1].start - 2); cx1 = min(cw, sl[1].stop + 2)
-                mask_crop = labels[cy0:cy1, cx0:cx1] == cid
-                mask_crop = ndi.binary_dilation(mask_crop, iterations=1)
-                d = trace_mask(mask_crop, 1.0, 1.0, x0 + cx0, y0 + cy0)
-                if not d:
-                    continue
-                col = pal[int(c)]
-                comps.append({"d": d, "color": hex_color(col), "area": area, "lum": float(col.mean()),
-                              "cx": x0 + (cx0 + cx1) * .5, "cy": y0 + (cy0 + cy1) * .5})
-        comps.sort(key=lambda c: (c["lum"], int(c["cy"] // 90), c["cx"] if int(c["cy"] // 90) % 2 == 0 else -c["cx"]))
-        for i in range(0, len(comps), 90):
-            chunk = comps[i:i + 90]
-            groups = {}
-            for c in sorted(chunk, key=lambda c: c["lum"]):
-                groups.setdefault(c["color"], []).append(c["d"])
-            parts = []
-            for color, ds in groups.items():
-                parts.append('<path fill="%s" fill-rule="evenodd" shape-rendering="geometricPrecision" d="%s"/>' %
-                             (color, "".join(ds)))
-            out.append({"kind": "focus-detail", "svg": "".join(parts),
-                        "pos": (float(np.mean([c["cx"] for c in chunk])), float(np.mean([c["cy"] for c in chunk]))),
-                        "angle": 0.0, "size": 9.0})
+        else:
+            idx = map_to_palette(crop, palette["pal"])
+        pal = palette["pal"]
+    else:
+        q = crop.quantize(colors=96, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
+        idx = np.asarray(q, dtype=np.int16)
+        pal = np.asarray(q.getpalette()[:256 * 3], dtype=np.uint8).reshape(-1, 3)
+    sx, sy = cw / float(sw), ch / float(sh)
+    comps = []
+    out = []
+    for c in np.unique(idx).tolist():
+        mask = idx == int(c)
+        labels, n = ndi.label(mask, structure=np.ones((3, 3), dtype=np.uint8))
+        for cid, sl in enumerate(ndi.find_objects(labels), start=1):
+            if sl is None:
+                continue
+            area = int((labels[sl] == cid).sum())
+            if area < min_area:
+                continue
+            cy0 = max(0, sl[0].start - 2); cy1 = min(sh, sl[0].stop + 2)
+            cx0 = max(0, sl[1].start - 2); cx1 = min(sw, sl[1].stop + 2)
+            mask_crop = labels[cy0:cy1, cx0:cx1] == cid
+            if dil:
+                mask_crop = ndi.binary_dilation(mask_crop, iterations=int(dil))
+            d = trace_mask(mask_crop, sx, sy, x0 + cx0 * sx, y0 + cy0 * sy,
+                           turd=turd, alphamax=alphamax)
+            if not d:
+                continue
+            col = pal[int(c)]
+            comps.append({"d": d, "color": hex_color(col), "area": area * sx * sy, "lum": float(col.mean()),
+                          "cx": x0 + (cx0 + cx1) * .5 * sx, "cy": y0 + (cy0 + cy1) * .5 * sy})
+    comps.sort(key=lambda c: (c["lum"], int(c["cy"] // 90), c["cx"] if int(c["cy"] // 90) % 2 == 0 else -c["cx"]))
+    for i in range(0, len(comps), 90):
+        chunk = comps[i:i + 90]
+        groups = {}
+        for c in sorted(chunk, key=lambda c: c["lum"]):
+            groups.setdefault(c["color"], []).append(c["d"])
+        parts = []
+        for color, ds in groups.items():
+            parts.append('<path fill="%s" fill-rule="evenodd" shape-rendering="geometricPrecision" d="%s"/>' %
+                         (color, "".join(ds)))
+        out.append({"kind": "focus-detail", "svg": "".join(parts),
+                    "pos": (float(np.mean([c["cx"] for c in chunk])), float(np.mean([c["cy"] for c in chunk]))),
+                    "angle": 0.0, "size": 9.0})
     return out
 
 
@@ -575,6 +664,95 @@ def svg_from_batches(all_batches, W, H, underlay):
     if underlay and not any(gid == "layer-base" for gid in [l[0] for l in specs]):
         layers.insert(0, '<g id="layer-base">%s</g>' % underlay)
     return "".join(layers)
+
+def build_painterly_batches(img, palette, line_direction=None, options=None):
+    """Return the exact batch sequence used by process mode (no timeline).
+
+    options overrides layer scales, component min-areas, per-layer blurs, the
+    focus crop and the shared tracer controls. Defaults preserve the original
+    0.34 / 0.52 / 0.85 working resolution.
+    """
+    W, H = img.size
+    opts = normalize_process_options(options)
+    ss = opts["ss"]
+    scales = {key: opts["%s_scale" % key] * ss for key in ("base", "mid", "detail")}
+    batches = []
+    for kind, target in (("base", 40), ("mid", 80), ("detail", 240)):
+        batches.extend(component_batches_for_regions(
+            img, W, H, kind, scales[kind], 14 if kind == "base" else (48 if kind == "mid" else 128),
+            opts["%s_min_area" % kind], opts["%s_blur" % kind], target, palette,
+            dil=opts["dil"], turd=opts["turd"], alphamax=opts["alphamax"]))
+    batches.extend(component_batches_for_focus(
+        img, W, H, palette, box=opts["focus_box"], scale=opts["focus_scale"] * ss,
+        min_area=opts["focus_min_area"], blur=opts["focus_blur"], dil=opts["focus_dil"],
+        turd=opts["turd"], alphamax=opts["alphamax"]))
+    batches.extend(build_two_tone(img, W, H))
+    batches.extend(build_occlusion(img, W, H))
+    batches.extend(build_undertone(img, W, H))
+    batches.extend(build_glaze(img, W, H))
+    batches.extend(build_color_grade(img, W, H))
+    batches.extend(component_batches_for_lines(img, W, H, line_direction))
+    return batches
+
+
+def make_underlay(img):
+    """Opaque border-colour rectangle used below every painterly batch."""
+    arr = np.asarray(img, dtype=np.uint8)
+    border = np.concatenate([arr[0], arr[-1], arr[:, 0], arr[:, -1]], axis=0)
+    bg = np.median(border, axis=0).astype(np.uint8)
+    W, H = img.size
+    return '<rect width="%d" height="%d" fill="%s"/>' % (W, H, hex_color(bg))
+
+
+def build_final_static_svg(img, palette, line_direction=None, title="",
+                           desc="", edge_soften=0.0, options=None):
+    """Render the process-mode algorithm to one final SVG, without replay UI.
+
+    This is the bridge used by vectorize.py --process-final. It keeps the
+    painterly component order and the final gold-line overlay, but emits no
+    data-step / data-total, no batches, no mask overlay and no player.
+    """
+    W, H = img.size
+    batches = build_painterly_batches(img, palette, line_direction, options)
+    underlay = make_underlay(img)
+    specs = [
+        ("layer-base", ["base"]),
+        ("layer-mid", ["mid"]),
+        ("layer-shadow", ["two-tone"]),
+        ("layer-detail", ["detail", "focus-detail"]),
+        ("layer-occlusion", ["occlusion"]),
+        ("layer-undertone", ["undertone"]),
+        ("layer-glaze", ["glaze"]),
+        ("layer-grade", ["color-grade"]),
+        ("layer-line", ["line-accent"]),
+    ]
+    layers = []
+    for gid, kinds in specs:
+        group = []
+        for kind in kinds:
+            group.extend([b for b in batches if b["kind"] == kind])
+        if not group:
+            continue
+        inner = "".join(b["svg"] for b in group)
+        if not inner:
+            continue
+        style = ' style="opacity:.32"' if gid == "layer-line" else ""
+        layers.append('<g id="%s"%s>%s</g>' % (gid, style, inner))
+    if not title:
+        title = "过程模式最终画面"
+    if not desc:
+        desc = "AI 生成；使用过程模式的绘制算法生成的最终画面，无过程回放。"
+    doc = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %d %d" '
+        'width="%d" height="%d" shape-rendering="geometricPrecision">'
+        '%s<title>%s</title><desc>%s</desc>%s</svg>'
+        % (W, H, W, H, underlay, escape(title), escape(desc), "".join(layers))
+    )
+    if edge_soften and float(edge_soften) > 0:
+        from svg_postprocess import soften_svg
+        doc = soften_svg(doc, float(edge_soften))
+    return doc
+
 
 def build_html(img, batches, phases, total_time, title, out_path, preview_path, underlay):
     W, H = img.size
@@ -695,30 +873,41 @@ init();
             "duration": round(total_time, 1), "preview": str(preview_path)}
 
 
-def make_global_palette(img, colors):
+def make_global_palette(img, colors, full=False, sample_n=80000, max_colors=1024):
     if colors <= 0:
         return None
-    if colors > 1024:
-        raise SystemExit("--palette max is 1024; use 256-512 for practical playback")
+    max_colors = int(max_colors)
+    if max_colors < 8:
+        raise SystemExit("palette max must be >= 8")
+    if colors > max_colors:
+        raise SystemExit("palette max is %d; raise it with --palette-max / --process-palette-max"
+                         % max_colors)
     n = max(8, int(colors))
+    W, H = img.size
     if n <= 256:
         q = img.quantize(colors=n, method=Image.Quantize.MEDIANCUT, dither=Image.Dither.NONE)
         pal = np.asarray(q.getpalette(), dtype=np.uint8).reshape(-1, 3)[:n]
         if len(pal) < n:
             pal = np.vstack([pal, np.repeat(pal[-1:], n - len(pal), axis=0)])
-        return {"pil": q, "pal": pal}
+        return {"pil": q, "pal": pal, "full": True, "sample_pixels": W * H}
     try:
         from sklearn.cluster import MiniBatchKMeans
     except ImportError as exc:
         raise SystemExit("--palette > 256 requires scikit-learn") from exc
-    W, H = img.size
-    scale = min(1.0, math.sqrt(80000.0 / max(1, W * H)))
-    sample = img.resize((max(1, round(W * scale)), max(1, round(H * scale))), Image.LANCZOS)
+    sample_n = int(sample_n)
+    if full or sample_n <= 0 or sample_n >= W * H:
+        sample = img
+        sample_pixels = W * H
+    else:
+        scale = min(1.0, math.sqrt(float(sample_n) / max(1, W * H)))
+        sample = img.resize((max(1, round(W * scale)), max(1, round(H * scale))), Image.LANCZOS)
+        sample_pixels = sample.width * sample.height
     x = np.asarray(sample, dtype=np.float32).reshape(-1, 3)
     km = MiniBatchKMeans(n_clusters=n, random_state=42, batch_size=4096, n_init=3, max_iter=100)
     km.fit(x)
     pal = np.clip(np.rint(km.cluster_centers_), 0, 255).astype(np.uint8)
-    return {"pil": None, "pal": pal}
+    return {"pil": None, "pal": pal, "full": bool(full or sample_n <= 0 or sample_n >= W * H),
+            "sample_pixels": int(sample_pixels)}
 
 
 def main():
@@ -729,38 +918,62 @@ def main():
     ap.add_argument("--duration", type=float, default=52.0)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--title", default="她与金线")
-    ap.add_argument("--palette", type=int, default=256, help="global palette colours sampled from the reference; 0 = per-layer cut, 1-256 median cut, 257-1024 k-means")
+    ap.add_argument("--palette", type=int, default=256, help="global palette colours sampled from the reference; 0 = per-layer cut, 1-256 median cut, 257+ k-means (ceiling --palette-max, default 1024)")
+    ap.add_argument("--palette-full", action="store_true", help="fit the >256-colour k-means palette on every reference pixel instead of an 80k-pixel sample")
+    ap.add_argument("--palette-sample", type=int, default=80000, help="pixels sampled for the >256-colour palette; 0 = all pixels (same as --palette-full)")
+    ap.add_argument("--palette-max", type=int, default=1024, help="hard ceiling for --palette; default 1024")
     ap.add_argument("--line-direction", default="", help="JSON written by the agent: per-region line hierarchy")
     ap.add_argument("--line-only", action="store_true", help="fast preview: only the line layer, no paint batches")
+    ap.add_argument("--base-scale", type=float, default=None, help="base layer trace scale; default 0.34")
+    ap.add_argument("--mid-scale", type=float, default=None, help="mid layer trace scale; default 0.52")
+    ap.add_argument("--detail-scale", type=float, default=None, help="detail layer trace scale; default 0.85")
+    ap.add_argument("--min-areas", default="", help="base,mid,detail component min areas; default 24,8,2")
+    ap.add_argument("--blurs", default="", help="base,mid,detail Gaussian blur radii; default 1.0,0.5,0.18")
+    ap.add_argument("--focus-box", default="", help="normalized x0,y0,x1,y1; default 0.10,0.08,0.90,0.92")
+    ap.add_argument("--focus", default="", help="focus scale,min_area,blur,dil; default 1.0,4,0,1")
+    ap.add_argument("--dil", type=int, default=None, help="component mask dilation; default 1")
+    ap.add_argument("--turd", type=int, default=None, help="potrace turdsize inside components; default 1")
+    ap.add_argument("--alphamax", type=float, default=None, help="potrace corner threshold; default 1.0")
+    ap.add_argument("--ss", type=float, default=None, help="multiply all layer scales; default 1.0")
     args = ap.parse_args()
     rng = random.Random(args.seed)
     img = load_reference(args.ref, parse_size(args.size), args.max_pixels)
     W, H = img.size
-    palette = make_global_palette(img, args.palette)
+    palette = make_global_palette(img, args.palette, full=args.palette_full,
+                                  sample_n=args.palette_sample, max_colors=args.palette_max)
     line_direction = load_line_direction(args.line_direction)
-    arr = np.asarray(img, dtype=np.uint8)
-    border = np.concatenate([arr[0], arr[-1], arr[:, 0], arr[:, -1]], axis=0)
-    bg = np.median(border, axis=0).astype(np.uint8)
-    underlay = '<rect width="%d" height="%d" fill="%s"/>' % (W, H, hex_color(bg))
+    underlay = make_underlay(img)
     if args.line_only:
         all_batches = component_batches_for_lines(img, W, H, line_direction)
     else:
-        all_batches = []
-        all_batches.extend(component_batches_for_regions(img, W, H, "base", 0.34, 14, 24, 1.0, 40, palette))
-        all_batches.extend(component_batches_for_regions(img, W, H, "mid", 0.52, 48, 8, 0.50, 80, palette))
-        all_batches.extend(component_batches_for_regions(img, W, H, "detail", 0.85, 128, 2, 0.18, 240, palette))
-        all_batches.extend(component_batches_for_focus(img, W, H, palette))
-        all_batches.extend(build_two_tone(img, W, H))
-        all_batches.extend(build_occlusion(img, W, H))
-        all_batches.extend(build_undertone(img, W, H))
-        all_batches.extend(build_glaze(img, W, H))
-        all_batches.extend(build_color_grade(img, W, H))
-        all_batches.extend(component_batches_for_lines(img, W, H, line_direction))
+        options = {"base_scale": args.base_scale, "mid_scale": args.mid_scale,
+                   "detail_scale": args.detail_scale}
+        if args.min_areas:
+            v = parse_csv(args.min_areas, 3, "--min-areas")
+            options.update(base_min_area=v[0], mid_min_area=v[1], detail_min_area=v[2])
+        if args.blurs:
+            v = parse_csv(args.blurs, 3, "--blurs")
+            options.update(base_blur=v[0], mid_blur=v[1], detail_blur=v[2])
+        if args.focus_box:
+            options["focus_box"] = parse_csv(args.focus_box, 4, "--focus-box")
+        if args.focus:
+            v = parse_csv(args.focus, 4, "--focus")
+            options.update(focus_scale=v[0], focus_min_area=v[1], focus_blur=v[2], focus_dil=v[3])
+        for key in ("dil", "turd", "alphamax", "ss"):
+            value = getattr(args, key)
+            if value is not None:
+                options[key] = value
+        all_batches = build_painterly_batches(img, palette, line_direction, options)
     phases, total_time = assign_timeline(all_batches, args.duration, rng)
     out = Path(args.out); out.parent.mkdir(parents=True, exist_ok=True)
     preview_path = out.with_suffix(".preview.html")
     info = build_html(img, all_batches, phases, total_time, args.title, out, preview_path, underlay)
     info["out"] = str(out)
+    info["palette"] = args.palette
+    info["palette_full"] = bool(palette.get("full")) if palette else False
+    info["palette_sample"] = int(palette.get("sample_pixels", 0)) if palette else 0
+    info["palette_max"] = args.palette_max
+    info["options"] = normalize_process_options(options) if not args.line_only else {}
     print(json.dumps(info, ensure_ascii=False))
 
 

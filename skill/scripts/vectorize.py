@@ -7,6 +7,28 @@ from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import native_loader  # noqa: E402  shared ctypes bindings (see native_loader.py)
+import svg_postprocess  # noqa: E402  optional edge-soften post-process
+import svg_compact  # noqa: E402  optional lossless path-data compaction
+
+
+def _csv_floats(text, count, name):
+    parts = [p for p in text.replace(" ", "").split(",") if p]
+    if len(parts) != count:
+        raise SystemExit("%s needs %d comma-separated values" % (name, count))
+    try:
+        return tuple(float(p) for p in parts)
+    except ValueError:
+        raise SystemExit("%s must contain numbers" % name)
+
+
+def _flag_value(a, nxt, name):
+    if a.startswith(name + "="):
+        return a.split("=", 1)[1], False
+    if a == name:
+        if nxt is None:
+            raise SystemExit("%s needs a value" % name)
+        return nxt, True
+    return None, False
 
 
 def load_native():
@@ -133,20 +155,160 @@ def seal_output(out_path, ref_path, W, H):
 
 def main():
     raw_args = sys.argv[1:]
-    full_palette = "--full-palette" in raw_args
-    seal_flag = "--seal" in raw_args
+    full_palette = False
+    seal_flag = False
     sample_n = 240000
+    palette_sample_explicit = False
+    edge_soften = 0.0
+    compact_flag = False
+    compact_precision = 6
+    process_final = False
+    process_palette = None
+    process_line_direction = ""
+    process_from_front = True
+    process_from_front_explicit = False
+    process_full_palette = False
+    process_full_palette_explicit = False
+    process_palette_sample = None
+    process_palette_max = 1024
+    process_options = {}
     args = []
-    for a in raw_args:
+    i = 0
+    while i < len(raw_args):
+        a = raw_args[i]
+        nxt = raw_args[i + 1] if i + 1 < len(raw_args) else None
         if a in ("--full-palette", "--seal"):
-            continue
-        if a.startswith("--palette-sample="):
+            if a == "--full-palette":
+                full_palette = True
+            else:
+                seal_flag = True
+        elif a.startswith("--palette-sample="):
             sample_n = int(a.split("=", 1)[1])
-            continue
-        args.append(a)
+            palette_sample_explicit = True
+        elif a == "--process-final":
+            process_final = True
+        elif a == "--process-from-front":
+            process_from_front = True
+            process_from_front_explicit = True
+        elif a == "--no-process-from-front":
+            process_from_front = False
+            process_from_front_explicit = True
+        elif a.startswith("--process-palette="):
+            process_palette = int(a.split("=", 1)[1])
+        elif a == "--process-palette":
+            if nxt is None:
+                raise SystemExit("--process-palette needs a value")
+            process_palette = int(nxt); i += 1
+        elif a == "--process-full-palette":
+            process_full_palette = True
+            process_full_palette_explicit = True
+        elif a == "--no-process-full-palette":
+            process_full_palette = False
+            process_full_palette_explicit = True
+        elif a.startswith("--process-palette-sample="):
+            process_palette_sample = int(a.split("=", 1)[1])
+        elif a == "--process-palette-sample":
+            if nxt is None:
+                raise SystemExit("--process-palette-sample needs a value")
+            process_palette_sample = int(nxt); i += 1
+        elif a.startswith("--process-palette-max="):
+            process_palette_max = int(a.split("=", 1)[1])
+        elif a == "--process-palette-max":
+            if nxt is None:
+                raise SystemExit("--process-palette-max needs a value")
+            process_palette_max = int(nxt); i += 1
+        elif a.startswith("--process-line-direction="):
+            process_line_direction = a.split("=", 1)[1]
+        elif a == "--process-line-direction":
+            if nxt is None:
+                raise SystemExit("--process-line-direction needs a value")
+            process_line_direction = nxt; i += 1
+        elif a == "--process-base-scale" or a.startswith("--process-base-scale="):
+            text, used_next = _flag_value(a, nxt, "--process-base-scale")
+            process_options["base_scale"] = float(text)
+            if used_next:
+                i += 1
+        elif a == "--process-mid-scale" or a.startswith("--process-mid-scale="):
+            text, used_next = _flag_value(a, nxt, "--process-mid-scale")
+            process_options["mid_scale"] = float(text)
+            if used_next:
+                i += 1
+        elif a == "--process-detail-scale" or a.startswith("--process-detail-scale="):
+            text, used_next = _flag_value(a, nxt, "--process-detail-scale")
+            process_options["detail_scale"] = float(text)
+            if used_next:
+                i += 1
+        elif a == "--process-min-areas" or a.startswith("--process-min-areas="):
+            text, used_next = _flag_value(a, nxt, "--process-min-areas")
+            vals = _csv_floats(text, 3, "--process-min-areas")
+            process_options.update(base_min_area=vals[0], mid_min_area=vals[1], detail_min_area=vals[2])
+            if used_next:
+                i += 1
+        elif a == "--process-blurs" or a.startswith("--process-blurs="):
+            text, used_next = _flag_value(a, nxt, "--process-blurs")
+            vals = _csv_floats(text, 3, "--process-blurs")
+            process_options.update(base_blur=vals[0], mid_blur=vals[1], detail_blur=vals[2])
+            if used_next:
+                i += 1
+        elif a == "--process-focus-box" or a.startswith("--process-focus-box="):
+            text, used_next = _flag_value(a, nxt, "--process-focus-box")
+            process_options["focus_box"] = _csv_floats(text, 4, "--process-focus-box")
+            if used_next:
+                i += 1
+        elif a == "--process-focus" or a.startswith("--process-focus="):
+            text, used_next = _flag_value(a, nxt, "--process-focus")
+            vals = _csv_floats(text, 4, "--process-focus")
+            process_options.update(focus_scale=vals[0], focus_min_area=vals[1],
+                                   focus_blur=vals[2], focus_dil=vals[3])
+            if used_next:
+                i += 1
+        elif a == "--process-dil" or a.startswith("--process-dil="):
+            text, used_next = _flag_value(a, nxt, "--process-dil")
+            process_options["dil"] = int(text)
+            if used_next:
+                i += 1
+        elif a == "--process-turd" or a.startswith("--process-turd="):
+            text, used_next = _flag_value(a, nxt, "--process-turd")
+            process_options["turd"] = int(text)
+            if used_next:
+                i += 1
+        elif a == "--process-alphamax" or a.startswith("--process-alphamax="):
+            text, used_next = _flag_value(a, nxt, "--process-alphamax")
+            process_options["alphamax"] = float(text)
+            if used_next:
+                i += 1
+        elif a == "--process-ss" or a.startswith("--process-ss="):
+            text, used_next = _flag_value(a, nxt, "--process-ss")
+            process_options["ss"] = float(text)
+            if used_next:
+                i += 1
+        elif a.startswith("--edge-soften="):
+            edge_soften = float(a.split("=", 1)[1])
+        elif a == "--edge-soften":
+            if nxt is None:
+                raise SystemExit("--edge-soften needs a value")
+            edge_soften = float(nxt); i += 1
+        elif a == "--compact":
+            compact_flag = True
+        elif a.startswith("--compact-precision="):
+            compact_precision = int(a.split("=", 1)[1])
+        elif a == "--compact-precision":
+            if nxt is None:
+                raise SystemExit("--compact-precision needs a value")
+            compact_precision = int(nxt); i += 1
+        else:
+            args.append(a)
+        i += 1
+    if edge_soften < 0:
+        raise SystemExit("--edge-soften must be >= 0")
+    if process_options and not process_final:
+        print("[vectorize] process options are ignored without --process-final", file=sys.stderr)
+    if (process_full_palette_explicit or process_palette_sample is not None
+            or process_palette_max != 1024) and not process_final:
+        print("[vectorize] process palette options are ignored without --process-final", file=sys.stderr)
     ref, out = args[0], args[1]
     K = int(args[2]) if len(args) > 2 else 128
-    if len(args) <= 2:
+    if len(args) <= 2 and not process_final:
         print("[vectorize] no K given, using default K=128; pass 256-384 for final output", flush=True)
     turd = int(args[3]) if len(args) > 3 else 6
     alphamax = float(args[4]) if len(args) > 4 else 1.0
@@ -156,6 +318,99 @@ def main():
     sk_thr = float(args[8]) if len(args) > 8 else 0.0   # 线稿层：边缘梯度阈值，0=不要线稿
     dark_k = int(args[9]) if len(args) > 9 else 0      # 分层色板：暗区(L<80)单独分配多少色，0=不分层
     med = int(args[10]) if len(args) > 10 else 0         # 中值滤波半径(3/5)：压掉边缘暗碎块，0=关
+
+    if process_from_front and process_final:
+        # Enabled by default. blur stays per-layer (1.0/0.5/0.18);
+        # sk_thr/dark_k/med have no process equivalent.
+        if "turd" not in process_options:
+            process_options["turd"] = turd
+        if "alphamax" not in process_options:
+            process_options["alphamax"] = alphamax
+        if "dil" not in process_options:
+            process_options["dil"] = dil
+        if "focus_dil" not in process_options:
+            process_options["focus_dil"] = dil
+        if "ss" not in process_options and not any(k.endswith("_scale") for k in process_options):
+            # Explicit --process-*-scale already chooses the working resolution;
+            # do not multiply it by the front ss as well.
+            process_options["ss"] = ss
+        if not process_full_palette_explicit:
+            process_full_palette = full_palette
+        if process_palette_sample is None and palette_sample_explicit:
+            process_palette_sample = sample_n
+    elif process_from_front_explicit and not process_final:
+        print("[vectorize] --process-from-front is ignored without --process-final", file=sys.stderr)
+
+    if process_final:
+        import paint_process
+        if seal_flag:
+            print("[vectorize] --seal is ignored with --process-final", file=sys.stderr)
+        if full_palette and not process_full_palette:
+            print("[vectorize] --full-palette is not applied with --process-final; "
+                  "use --process-full-palette", file=sys.stderr)
+        if palette_sample_explicit and process_palette_sample is None:
+            print("[vectorize] --palette-sample is not applied with --process-final; "
+                  "use --process-palette-sample=N", file=sys.stderr)
+        if process_palette is None:
+            process_palette = K if len(args) > 2 else 256
+        if process_palette_max < 8:
+            raise SystemExit("--process-palette-max must be >= 8")
+        if not (0 <= process_palette <= process_palette_max):
+            raise SystemExit("--process-palette must be 0..%d (raise --process-palette-max to allow more)"
+                             % process_palette_max)
+        palette_sample_n = process_palette_sample if process_palette_sample is not None else 80000
+        if palette_sample_n < 0:
+            raise SystemExit("--process-palette-sample must be >= 0")
+        img = paint_process.load_reference(ref, None, 2000000)
+        W, H = img.size
+        palette = paint_process.make_global_palette(img, process_palette,
+                                                    full=process_full_palette,
+                                                    sample_n=palette_sample_n,
+                                                    max_colors=process_palette_max)
+        palette_full = bool(palette.get("full")) if palette else False
+        palette_sample_pixels = int(palette.get("sample_pixels", 0)) if palette else 0
+        line_dir = paint_process.load_line_direction(process_line_direction)
+        try:
+            options_info = paint_process.normalize_process_options(process_options)
+        except ValueError as exc:
+            raise SystemExit(str(exc))
+        svg = paint_process.build_final_static_svg(
+            img, palette, line_dir,
+            title="过程模式最终画面",
+            edge_soften=edge_soften,
+            options=process_options,
+        )
+        if compact_flag:
+            svg = svg_compact.compact_svg(svg, compact_precision)
+        paths = svg.count("<path")
+        out_path = Path(out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        if out_path.suffix.lower() in (".html", ".htm"):
+            html = ("<!doctype html><html><head><meta charset=\"utf-8\">"
+                    "<title>过程模式最终画面</title><style>html,body{margin:0;background:#fff}"
+                    "svg{display:block}</style></head><body>" + svg + "</body></html>")
+            out_path.write_text(html, encoding="utf-8")
+            info = {"out": out, "preview": out, "W": W, "H": H, "mode": "process-final",
+                    "palette": process_palette, "palette_full": palette_full,
+                    "palette_sample": palette_sample_pixels,
+                    "palette_max": process_palette_max,
+                    "paths": paths, "compact": compact_flag,
+                    "from_front": process_from_front, "options": options_info,
+                    "kb": round(len(html.encode("utf-8")) / 1024, 1)}
+        else:
+            doc = '<?xml version="1.0" encoding="UTF-8"?>\n' + svg + "\n"
+            out_path.write_text(doc, encoding="utf-8")
+            info = {"out": out, "W": W, "H": H, "mode": "process-final",
+                    "palette": process_palette, "palette_full": palette_full,
+                    "palette_sample": palette_sample_pixels,
+                    "palette_max": process_palette_max,
+                    "paths": paths, "compact": compact_flag,
+                    "from_front": process_from_front, "options": options_info,
+                    "layers": svg.count('<g id="layer-'),
+                    "kb": round(len(doc.encode("utf-8")) / 1024, 1)}
+        print(json.dumps(info, ensure_ascii=False))
+        return
+
     raw = Image.open(ref)
     alpha_mask = None
     if raw.mode in ("RGBA", "LA", "PA"):
@@ -286,6 +541,14 @@ def main():
             sketch = ('<path fill="#33445c" fill-opacity="0.5" data-step="0" d="%s"/>' % sk_d)
     svg = ('<svg id="art" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %d %d" width="%d" height="%d" '
            'data-total="%d">%s%s</svg>') % (W, H, W, H, MAXSTEP, sketch, "".join(paths))
+    if edge_soften > 0:
+        if seal_flag:
+            print("[vectorize] --seal is skipped when --edge-soften is set; "
+                  "softening must be the final pass", file=sys.stderr)
+            seal_flag = False
+        svg = svg_postprocess.soften_svg(svg, edge_soften)
+    if compact_flag:
+        svg = svg_compact.compact_svg(svg, compact_precision)
     if out.lower().endswith(".svg"):
         # A static SVG has no player: data-step / data-total belong to the HTML
         # playback branch only and must not leak into the deliverable.
@@ -296,6 +559,7 @@ def main():
         if seal_flag:
             seal_output(out, ref, W, H)
         print(json.dumps({"out": out, "W": W, "H": H, "K": K, "layers": len(paths),
+                          "compact": compact_flag,
                           "kb": round(len(doc.encode("utf-8")) / 1024, 1)}))
         return
     html = """<!doctype html><html><head><meta charset="utf-8"><title>vector redraw</title>
@@ -326,6 +590,7 @@ document.getElementById('bar').onclick=function(){show((+art.dataset.cur%N)+1)};
     if seal_flag:
         seal_output(out, ref, W, H)
     print(json.dumps({"out": out, "W": W, "H": H, "K": K, "layers": len(paths),
+                      "compact": compact_flag,
                       "kb": round(len(html) / 1024, 1)}))
 
 main()
