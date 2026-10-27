@@ -602,6 +602,8 @@ def main():
     svg = ('<svg id="art" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %d %d" width="%d" height="%d" '
            'data-total="%d">%s%s</svg>') % (W, H, W, H, MAXSTEP, sketch, "".join(paths))
     if edge_soften > 0:
+        print("[vectorize] --edge-soften is legacy (blur filter); --alpha-soften keeps geometry "
+              "and is preferred for deliverables", file=sys.stderr)
         if seal_flag:
             print("[vectorize] --seal is skipped when --edge-soften is set; "
                   "softening must be the final pass", file=sys.stderr)
