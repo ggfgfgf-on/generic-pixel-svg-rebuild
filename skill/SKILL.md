@@ -38,6 +38,35 @@ whenToUse: >-
 - 禁止：Canvas、位图/base64 内嵌、外链、渐变（`<linearGradient>`/`<radialGradient>`/`fill|stroke="url(...)"`）、任何 CSS transition。像素分支必须 `shape-rendering="crispEdges"`；曲线分支用 `geometricPrecision`。
 - 可选后处理 `--edge-soften=N` 会引入一个 `feGaussianBlur` 滤镜，是唯一的 `url(#)` 例外，默认关闭；它不改变路径几何。
 
+## 默认入口：先跑 auto.py（别手调参数）
+
+**除非用户明确给了参数，否则不要自己猜 K / ss / turd。** 一条命令跑完并打印测量对比：
+
+```bash
+python <skill>/scripts/auto.py ref.png out.svg
+```
+
+它会依次跑 3 个预设（illustration / portrait / photo），每档都真实渲染 + 算 mean / ≤5 / uncovered，按 `score = mean + 0.35·log2(kb/100)` 选一个（精度与体积的加权，不是纯精度），把最好的复制到 `out.svg`，并输出：
+
+```json
+{"picked": "photo", "mean": 2.935, "kb": 11252,
+ "candidates": [{"preset": "illustration", "mean": 3.343, "kb": 9866, "score": 5.66},
+                {"preset": "portrait", "mean": 3.323, "kb": 30000, "score": 6.20},
+                {"preset": "photo", "mean": 2.935, "kb": 11252, "score": 5.32}]}
+```
+
+| 预设 | K | ss | 额外 | 适合 |
+|---|---|---|---|---|
+| `icon` | 32 | 2 | — | 图标、扁平插画（`--try-all` 才跑） |
+| `lineart` | 24 | 3 | — | 线稿、墨线（`--try-all` 才跑） |
+| `illustration` | 128 | 2 | — | 二次元/角色画，均衡默认 |
+| `portrait` | 96 | 2 | alpha 环 + 真实色 6 级 + refine 1 遍 | 柔光人像、皮肤过渡 |
+| `photo` | 192 | 2 | — | 照片、写实 |
+
+单独跑某档：`auto.py ref.png out.svg --preset portrait --keep runs/`（`--keep` 保留所有候选文件，便于人工对比）。
+
+**报错或结果明显不对时**：先看 `candidates` 里每档的 `mean`，不是看 `picked`。某档 `mean` 异常高通常说明该预设不适合这类图（例如线稿跑 photo），换预设比调参更快。
+
 ## 脚本（A→G 全链路已固化）
 
 **默认用 `vectorize.py` 做 SVG 重绘；`build_svg.py` 的像素矩形模式已弃用**，只保留作逐像素误差参考，不再作为默认或交付。`paint_process.py` 是显式可选分支，用户没有点名“作画过程 / 回放”时不要调用；但 `vectorize.py --process-final` 可复用它的**最终画面算法**（默认关闭，无回放）。
