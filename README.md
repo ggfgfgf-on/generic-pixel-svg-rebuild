@@ -12,17 +12,18 @@ curve branches, metric loop, per-step verification, regression suite.
 
 ### Install
 
-Download the release zip and run the installer:
+Grab the latest zip from
+https://github.com/ggfgfgf-on/generic-pixel-svg-rebuild/releases/latest and run the installer:
 
 ```powershell
 # Windows
-Expand-Archive generic-pixel-svg-rebuild-1.0.0.zip -DestinationPath .
+Expand-Archive generic-pixel-svg-rebuild-*.zip -DestinationPath .
 .\generic-pixel-svg-rebuild\install.ps1
 ```
 
 ```bash
 # macOS / Linux
-unzip generic-pixel-svg-rebuild-1.0.0.zip
+unzip generic-pixel-svg-rebuild-*.zip
 ./generic-pixel-svg-rebuild/install.sh
 ```
 
