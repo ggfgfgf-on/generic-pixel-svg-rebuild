@@ -61,6 +61,9 @@ python <skill>/scripts/seal_gaps.py out.svg shot.png out-sealed.svg   # 也可�
 
 # 可选边缘后处理（默认关闭）：feGaussianBlur 柔化最终边缘，不改变几何；sigma 约 0.15~0.6
 python <skill>/scripts/vectorize.py ref.png out.svg 192 6 1.0 1 0.4 2 0 --edge-soften=0.35
+
+# 慢速版：几何 alpha 环软化色阶断层（默认关闭，与 --edge-soften 互斥）
+python <skill>/scripts/vectorize.py ref.png out.svg 384 6 1.0 1 0.4 3 0 --alpha-soften 2 --alpha-strength 0.25
 python <skill>/scripts/svg_postprocess.py out.svg out-soft.svg --soften 0.35
 # 注意：--edge-soften 与 --seal 同用时，seal 会跳过（柔化必须是最后一层）
 
@@ -136,9 +139,13 @@ python <skill>/scripts/paint_process.py ref.png out.html --size 876x1904 --durat
 
 > K 是**颜色层数**，不是绘画阶段数。过程模式的 11 个阶段是 `paint_process.py` 专有；`vectorize.py` 的 384 层是 384 个色块路径。静态 `.svg` 不写 `data-step`，只有 HTML 播放器/过程模式需要播放标记。
 
-### 三个默认关闭的可选开关
+### 默认关闭的可选开关
 
 **`--edge-soften=SIGMA`：边缘柔化后处理。** 它直接作用于已完成 SVG（或 HTML 里的 SVG），只增加一个 `feGaussianBlur` 和一层包装，不改路径坐标、不改层序。适合“放大很多倍不要让 1px 阶梯很扎眼”的交付；副作用是整体轻微变软。想真正提高轮廓分辨率，应该提高 `ss`（如 3×），`--edge-soften` 只是最终视觉后处理。`svg_postprocess.py` 可独立对已有 SVG 跑，参数为 `--soften N`。
+
+**`--alpha-soften=N`：几何式边界软化。** 对每个色带在**外侧**补 N 圈 alpha 递减的 `<path>`（`fill-opacity` 依次 `strength`、`strength/2`…），把相邻色带之间从「1 级跳变」变成「N 级缓变」。纯几何实现，不引入滤镜或渐变，因此与 `--edge-soften` 互斥（同开会直接报错）。配套 `--alpha-width=PX`（默认 1.0，每圈宽度）与 `--alpha-strength=A`（默认 0.5，首圈 alpha）。
+
+实测 400×711、K=96/ss=1：基准 mean 6.06 / 强边 48,114 / mean_step 5.06；`--alpha-soften 2 --alpha-strength 0.25` → 7.06 / 35,892（-25%）/ 4.16；`--alpha-strength 0.5` → 7.99 / 32,112（-33%）/ 4.09；`--alpha-width 2` → 10.26 / 25,271 / 3.60。K=192/ss=2 时基准 4.82、8s、9.6MB；软化后 7.22、21s、40.9MB（强边 46,813→31,152）。它换的是「色阶断层更少」，代价是逐像素 mean 上升（环把边界推向邻色）与体积约 4×。要精度就关掉；要「看不出台阶」就开，建议从 `--alpha-soften 2 --alpha-strength 0.25` 起扫。
 
 **`--process-final`：用过程模式算法只出最终图。** 默认关闭；打开后不执行普通颜色层描摹，而是调用 `paint_process.py` 的同一套平涂/二分/细化/罩染/收线算法，直接输出静态 SVG。不生成 11 阶段、884 批次、播放器或 `data-step`。可选 `--process-palette=N`（默认 256；若给了位置参数 K 则用 K）和 `--process-line-direction=FILE`。`--process-palette` 为 257–上限（默认 1024，可用 `--process-palette-max=N` 提高）时默认只在约 8 万像素上拟合 k-means；`--process-full-palette` 或 `--process-palette-sample=0` 改为全部像素，`--process-palette-sample=N` 指定抽样像素。同一张图、同一 palette/线稿参数下，最终画面与过程模式的完成帧一致；区别只是没有过程。输出 `.svg` 得到静态 SVG，输出 `.html` 得到无播放器的静态 HTML。
 

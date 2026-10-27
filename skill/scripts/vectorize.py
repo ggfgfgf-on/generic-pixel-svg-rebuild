@@ -160,6 +160,9 @@ def main():
     sample_n = 240000
     palette_sample_explicit = False
     edge_soften = 0.0
+    alpha_soften = 0
+    alpha_width = 1.0
+    alpha_strength = 0.5
     compact_flag = False
     compact_precision = 6
     process_final = False
@@ -288,6 +291,24 @@ def main():
             if nxt is None:
                 raise SystemExit("--edge-soften needs a value")
             edge_soften = float(nxt); i += 1
+        elif a.startswith("--alpha-soften="):
+            alpha_soften = int(a.split("=", 1)[1])
+        elif a == "--alpha-soften":
+            if nxt is None:
+                raise SystemExit("--alpha-soften needs a value")
+            alpha_soften = int(nxt); i += 1
+        elif a.startswith("--alpha-strength="):
+            alpha_strength = float(a.split("=", 1)[1])
+        elif a == "--alpha-strength":
+            if nxt is None:
+                raise SystemExit("--alpha-strength needs a value")
+            alpha_strength = float(nxt); i += 1
+        elif a.startswith("--alpha-width="):
+            alpha_width = float(a.split("=", 1)[1])
+        elif a == "--alpha-width":
+            if nxt is None:
+                raise SystemExit("--alpha-width needs a value")
+            alpha_width = float(nxt); i += 1
         elif a == "--compact":
             compact_flag = True
         elif a.startswith("--compact-precision="):
@@ -301,6 +322,14 @@ def main():
         i += 1
     if edge_soften < 0:
         raise SystemExit("--edge-soften must be >= 0")
+    if alpha_soften < 0 or alpha_soften > 8:
+        raise SystemExit("--alpha-soften must be 0..8")
+    if alpha_width <= 0:
+        raise SystemExit("--alpha-width must be > 0")
+    if not (0 < alpha_strength <= 1):
+        raise SystemExit("--alpha-strength must be in (0, 1]")
+    if alpha_soften and edge_soften:
+        raise SystemExit("--alpha-soften and --edge-soften both soften edges; pick one")
     if process_options and not process_final:
         print("[vectorize] process options are ignored without --process-final", file=sys.stderr)
     if (process_full_palette_explicit or process_palette_sample is not None
@@ -525,6 +554,37 @@ def main():
         step = 1 + int(round(min(rank, n_layers - 1) * (MAXSTEP - 1) / max(1, n_layers - 1)))
         if d:
             paths.append('<path fill="%s" fill-rule="evenodd" data-step="%d" d="%s"/>' % (col, step, d))
+    if alpha_soften > 0:
+        # 几何式边界软化：在每个色带外侧补 alpha 递减的环，让相邻色带之间
+        # 从"1 级跳变"变成"N 级缓变"。不用渐变、不用滤镜，纯 <path> + fill-opacity。
+        from scipy.ndimage import binary_dilation
+        ring_step = max(1, int(round(alpha_width * ss)))
+        valid = (lab >= 0)
+        ring_paths = []
+        for area, c in areas:
+            if area < 8:
+                continue
+            base = (lab == c)
+            prev = base
+            col = "#%02x%02x%02x" % tuple(int(round(v)) for v in cent[c])
+            for k in range(1, alpha_soften + 1):
+                cur = binary_dilation(prev, iterations=ring_step)
+                ring = cur & ~prev & valid
+                prev = cur
+                if int(ring.sum()) < 8:
+                    continue
+                d = native_path(ring, ss, turd, alphamax, 2)
+                if d is None:
+                    bmp = potrace.Bitmap(~ring)
+                    tr = bmp.trace(turdsize=turd, alphamax=alphamax, opticurve=True, opttolerance=0.2)
+                    d = "".join(curv_d(cv, scale=ss) for cv in tr)
+                if d:
+                    ring_paths.append('<path fill="%s" fill-opacity="%.3f" data-step="0" d="%s"/>'
+                                      % (col, alpha_strength * (0.5 ** (k - 1)), d))
+        paths.extend(ring_paths)
+        print("[vectorize] alpha-soften: %d ring(s) of %d mask px -> %d paths"
+              % (alpha_soften, ring_step, len(ring_paths)), file=sys.stderr)
+
     sketch = ""
     if sk_thr > 0:
         g = np.asarray(img.convert("L"), dtype=np.float32)
