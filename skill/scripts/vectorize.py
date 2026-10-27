@@ -165,6 +165,9 @@ def main():
     alpha_strength = None          # None = auto (0.25 blend, 0.7 reference-colour)
     alpha_ramp = None              # None = auto (on for blending, off for reference-colour)
     alpha_true_color = 0
+    alpha_min_err = 0.0
+    alpha_refine = 0
+    alpha_tol = 1.0
     compact_flag = False
     compact_precision = 6
     process_final = False
@@ -311,6 +314,24 @@ def main():
                 raise SystemExit("--alpha-true-color must be >= 2")
         elif a == "--alpha-true-color":
             alpha_true_color = 3
+        elif a.startswith("--alpha-refine="):
+            alpha_refine = int(a.split("=", 1)[1])
+        elif a == "--alpha-refine":
+            if nxt is None:
+                raise SystemExit("--alpha-refine needs a value")
+            alpha_refine = int(nxt); i += 1
+        elif a.startswith("--alpha-tol="):
+            alpha_tol = float(a.split("=", 1)[1])
+        elif a == "--alpha-tol":
+            if nxt is None:
+                raise SystemExit("--alpha-tol needs a value")
+            alpha_tol = float(nxt); i += 1
+        elif a.startswith("--alpha-min-err="):
+            alpha_min_err = float(a.split("=", 1)[1])
+        elif a == "--alpha-min-err":
+            if nxt is None:
+                raise SystemExit("--alpha-min-err needs a value")
+            alpha_min_err = float(nxt); i += 1
         elif a == "--alpha-ramp":
             alpha_ramp = True
         elif a == "--no-alpha-ramp":
@@ -579,6 +600,13 @@ def main():
         ring_step = max(1, int(round(alpha_width * ss)))
         valid = (lab >= 0)
         px_all = np.asarray(img, dtype=np.float32).reshape(-1, 3)
+        if alpha_min_err > 0:
+            # 只修"平涂确实画错了"的地方：该像素当前误差小于阈值就别动它，
+            # 平坦区块上补环是纯损失（实测 fine-grad 0-6 区间净亏 0.24-0.57）
+            lab_safe = np.where(lab < 0, 0, lab)
+            band_rgb = cent[lab_safe]
+            cur_err = np.abs(px_all - band_rgb.reshape(-1, 3)).max(axis=1)
+            valid = valid & (cur_err >= alpha_min_err).reshape(lab.shape)
         if alpha_ramp:
             # 只软"该软的地方"：参考图在这条边界上本来就是一段缓变（5x5 邻域的
             # 色差中等、细梯度很小）。硬边（1px 跳变）和平坦色块都不补环。
@@ -592,25 +620,27 @@ def main():
             gy[1:-1, :] = np.abs(gl[2:, :] - gl[:-2, :])
             fine = gx + gy
             valid = valid & (span >= 6) & (span <= 72) & (fine <= 14)
-        ring_paths = []
-        for area, c in areas:
-            if area < 8:
-                continue
-            base = (lab == c)
-            prev = base
-            col = "#%02x%02x%02x" % tuple(int(round(v)) for v in cent[c])
-            for k in range(1, alpha_soften + 1):
-                cur = binary_dilation(prev, iterations=ring_step)
-                ring = cur & ~prev & valid
-                prev = cur
-                if int(ring.sum()) < 8:
+        def build_rings(valid_mask):
+            ring_paths = []
+            for area, c in areas:
+                if area < 8:
                     continue
-                d = native_path(ring, ss, turd, alphamax, 2)
-                if d is None:
-                    bmp = potrace.Bitmap(~ring)
-                    tr = bmp.trace(turdsize=turd, alphamax=alphamax, opticurve=True, opttolerance=0.2)
-                    d = "".join(curv_d(cv, scale=ss) for cv in tr)
-                if d:
+                base = (lab == c)
+                prev = base
+                col = "#%02x%02x%02x" % tuple(int(round(v)) for v in cent[c])
+                for k in range(1, alpha_soften + 1):
+                    cur = binary_dilation(prev, iterations=ring_step)
+                    ring = cur & ~prev & valid_mask
+                    prev = cur
+                    if int(ring.sum()) < 8:
+                        continue
+                    d = native_path(ring, ss, turd, alphamax, 2)
+                    if d is None:
+                        bmp = potrace.Bitmap(~ring)
+                        tr = bmp.trace(turdsize=turd, alphamax=alphamax, opticurve=True, opttolerance=0.2)
+                        d = "".join(curv_d(cv, scale=ss) for cv in tr)
+                    if not d:
+                        continue
                     if alpha_true_color:
                         # 环按参考亮度再切 S 段，每段用该段真实均值色：等于在该边界
                         # 临时提高色阶密度，这才可能把 mean 压下去（不是靠 alpha 混合）
@@ -640,6 +670,44 @@ def main():
                     else:
                         ring_paths.append('<path fill="%s" fill-opacity="%.3f" data-step="0" d="%s"/>'
                                           % (col, alpha_strength * (0.5 ** (k - 1)), d))
+            return ring_paths
+
+        if alpha_refine > 0:
+            # 先按全边界生成、渲染、再看红绿图：把"加了反而更差"的像素剔掉，
+            # 迭代 alpha_refine 次。这是把人工调参的那一步自动化。
+            import tempfile
+            ref_arr = _flat(ref)
+            tmpdir = Path(tempfile.mkdtemp(prefix="alpha-refine-"))
+
+            def _render(ps, tag):
+                doc = ('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %d %d" width="%d" height="%d">%s</svg>'
+                       % (W, H, W, H, "".join(ps)))
+                hp = tmpdir / (tag + ".html")
+                hp.write_text('<!doctype html><meta charset="utf-8">'
+                              '<style>html,body{margin:0;background:#fff}</style>' + doc, encoding="utf-8")
+                pp = tmpdir / (tag + ".png")
+                _render_file(hp, pp, W, H)
+                return _flat(str(pp))
+
+            err_base = np.abs(_render(paths, "base") - ref_arr).max(axis=2)
+            cur_valid = valid
+            for it in range(alpha_refine):
+                cand = paths + build_rings(cur_valid)
+                err_cur = np.abs(_render(cand, "it%d" % it) - ref_arr).max(axis=2)
+                from scipy.ndimage import uniform_filter
+                # 用 3x3 局部均值比较：软化本来就是把误差摊开，逐像素比较会把所有环都判死
+                worse = (uniform_filter(err_cur.astype(np.float32), 3)
+                         > uniform_filter(err_base.astype(np.float32), 3) + alpha_tol).astype(np.uint8) * 255
+                worse = np.asarray(Image.fromarray(worse).resize(lab.shape[::-1], Image.NEAREST)) > 127
+                new_valid = cur_valid & ~worse
+                dropped = int(cur_valid.sum() - new_valid.sum())
+                print("[vectorize] alpha-refine pass %d: dropped %d px" % (it + 1, dropped), file=sys.stderr)
+                if dropped == 0:
+                    break
+                cur_valid = new_valid
+            ring_paths = build_rings(cur_valid)
+        else:
+            ring_paths = build_rings(valid)
         paths.extend(ring_paths)
         print("[vectorize] alpha-soften: %d ring(s) of %d mask px -> %d paths"
               % (alpha_soften, ring_step, len(ring_paths)), file=sys.stderr)
