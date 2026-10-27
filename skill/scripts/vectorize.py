@@ -162,11 +162,9 @@ def main():
     edge_soften = 0.0
     alpha_soften = 0
     alpha_width = 1.0
-    alpha_strength = 0.5
-    alpha_min_grad = 0.0
-    alpha_ramp = False
+    alpha_strength = None          # None = auto (0.25 blend, 0.7 reference-colour)
+    alpha_ramp = None              # None = auto (on for blending, off for reference-colour)
     alpha_true_color = 0
-    alpha_tc_alpha = 1.0
     compact_flag = False
     compact_precision = 6
     process_final = False
@@ -307,12 +305,6 @@ def main():
             if nxt is None:
                 raise SystemExit("--alpha-strength needs a value")
             alpha_strength = float(nxt); i += 1
-        elif a.startswith("--alpha-tc-alpha="):
-            alpha_tc_alpha = float(a.split("=", 1)[1])
-        elif a == "--alpha-tc-alpha":
-            if nxt is None:
-                raise SystemExit("--alpha-tc-alpha needs a value")
-            alpha_tc_alpha = float(nxt); i += 1
         elif a.startswith("--alpha-true-color="):
             alpha_true_color = int(a.split("=", 1)[1])
             if alpha_true_color < 2:
@@ -321,12 +313,8 @@ def main():
             alpha_true_color = 3
         elif a == "--alpha-ramp":
             alpha_ramp = True
-        elif a.startswith("--alpha-min-grad="):
-            alpha_min_grad = float(a.split("=", 1)[1])
-        elif a == "--alpha-min-grad":
-            if nxt is None:
-                raise SystemExit("--alpha-min-grad needs a value")
-            alpha_min_grad = float(nxt); i += 1
+        elif a == "--no-alpha-ramp":
+            alpha_ramp = False
         elif a.startswith("--alpha-width="):
             alpha_width = float(a.split("=", 1)[1])
         elif a == "--alpha-width":
@@ -350,8 +338,12 @@ def main():
         raise SystemExit("--alpha-soften must be 0..8")
     if alpha_width <= 0:
         raise SystemExit("--alpha-width must be > 0")
-    if alpha_min_grad < 0:
-        raise SystemExit("--alpha-min-grad must be >= 0")
+    if alpha_strength is None:
+        alpha_strength = 0.7 if alpha_true_color else 0.25
+    if alpha_ramp is None:
+        # 混合模式只在缓变区补环更划算（每千条边代价 0.046 vs 0.082）；
+        # 真实局部色模式则相反——它靠补中间色降误差，全边界覆盖才够
+        alpha_ramp = (alpha_true_color == 0)
     if not (0 < alpha_strength <= 1):
         raise SystemExit("--alpha-strength must be in (0, 1]")
     if alpha_soften and edge_soften:
@@ -600,13 +592,6 @@ def main():
             gy[1:-1, :] = np.abs(gl[2:, :] - gl[:-2, :])
             fine = gx + gy
             valid = valid & (span >= 6) & (span <= 72) & (fine <= 14)
-        if alpha_min_grad > 0:
-            # 只在"参考图本身就在变化"的地方补环：平坦色块上补环属于纯损失
-            gimg = np.asarray(img.convert("L"), dtype=np.float32)
-            gx = np.zeros_like(gimg); gy = np.zeros_like(gimg)
-            gx[:, 1:-1] = np.abs(gimg[:, 2:] - gimg[:, :-2])
-            gy[1:-1, :] = np.abs(gimg[2:, :] - gimg[:-2, :])
-            valid = valid & ((gx + gy) >= alpha_min_grad)
         ring_paths = []
         for area, c in areas:
             if area < 8:
@@ -651,7 +636,7 @@ def main():
                             if d2:
                                 ring_paths.append('<path fill="#%02x%02x%02x" fill-opacity="%.3f" data-step="0" d="%s"/>'
                                                   % (int(round(rc[0])), int(round(rc[1])), int(round(rc[2])),
-                                                     alpha_tc_alpha, d2))
+                                                     alpha_strength, d2))
                     else:
                         ring_paths.append('<path fill="%s" fill-opacity="%.3f" data-step="0" d="%s"/>'
                                           % (col, alpha_strength * (0.5 ** (k - 1)), d))
