@@ -105,6 +105,105 @@ def palette_native(px, k):
     return native_loader.palette_centers(px, k)
 
 
+def _parse_region(box_s, k_s):
+    try:
+        box = [int(round(float(v))) for v in box_s.split(",")]
+    except ValueError:
+        raise SystemExit("--region needs x0,y0,x1,y1:K[,SS] (source pixels, colour count, optional ss)")
+    if len(box) != 4 or not k_s:
+        raise SystemExit("--region needs x0,y0,x1,y1:K[,SS]")
+    k_part, _, ss_part = k_s.partition(",")
+    try:
+        k = int(k_part)
+        sr = int(ss_part) if ss_part else None
+    except ValueError:
+        raise SystemExit("--region colour count and ss must be integers")
+    if sr is not None and not (1 <= sr <= 4):
+        raise SystemExit("--region ss must be 1..4")
+    return {"box": (box[0], box[1], box[2], box[3]), "k": k, "ss": sr, "mask": None}
+
+
+def _parse_region_mask(path_s, k_s):
+    from PIL import Image as _Image
+    if not path_s or not k_s:
+        raise SystemExit("--region-mask needs FILE:K[,SS]")
+    k_part, _, ss_part = k_s.partition(",")
+    mask = _Image.open(path_s).convert("L")
+    try:
+        k = int(k_part)
+        sr = int(ss_part) if ss_part else None
+    except ValueError:
+        raise SystemExit("--region-mask colour count and ss must be integers")
+    if sr is not None and not (1 <= sr <= 4):
+        raise SystemExit("--region-mask ss must be 1..4")
+    return {"box": None, "k": k, "ss": sr, "mask": mask}
+
+
+def trace_region(base_img, spec, turd, alphamax, sample_n=240000, step=999, ss_default=1):
+    """Trace one region at its own colour budget and (optional) own supersampling.
+
+    spec = {"box": (x0, y0, x1, y1) or None, "k": K, "ss": ss or None,
+            "mask": PIL mask (L, original resolution) or None}
+
+    Returns (svg_group, pixels_used). Coordinates are kept in source pixels by
+    wrapping the region paths in a translate group, so a region may use a
+    different ss from the global pass without touching the global geometry.
+    """
+    from scipy.spatial import cKDTree
+    W, H = base_img.size
+    mask = spec.get("mask")
+    box = spec.get("box")
+    if mask is not None:
+        arr = np.asarray(mask, dtype=np.uint8) > 127
+        ys, xs = np.nonzero(arr)
+        if len(xs) == 0:
+            return "", 0
+        if box is None:
+            box = (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
+    if box is None:
+        return "", 0
+    x0 = max(0, min(W - 1, int(box[0]))); y0 = max(0, min(H - 1, int(box[1])))
+    x1 = max(x0 + 1, min(W, int(box[2]))); y1 = max(y0 + 1, min(H, int(box[3])))
+    sr = int(spec.get("ss") or ss_default)
+    crop = base_img.crop((x0, y0, x1, y1))
+    cw, ch = crop.size
+    if sr != 1:
+        crop = crop.resize((cw * sr, ch * sr), Image.LANCZOS)
+    carr = np.asarray(crop, dtype=np.float32).reshape(-1, 3)
+    k = int(spec["k"])
+    boxes = median_cut(_palette_sample(carr, sample_n), k)
+    centers = np.array([b.mean(0) for b in boxes], dtype=np.float32)
+    if len(centers) == 0:
+        return "", 0
+    lab = cKDTree(centers).query(carr, workers=-1)[1].astype(np.int32).reshape(ch * sr, cw * sr)
+    if mask is not None:
+        m = mask.crop((x0, y0, x1, y1))
+        if sr != 1:
+            m = m.resize((cw * sr, ch * sr), Image.NEAREST)
+        keep = np.asarray(m, dtype=np.uint8) > 127
+    else:
+        keep = np.ones_like(lab, bool)
+    out, used = [], 0
+    for ci in range(len(centers)):
+        sub = (lab == ci) & keep
+        n = int(sub.sum())
+        if n < 8:
+            continue
+        d = native_path(sub, sr, turd, alphamax, 2)
+        if d is None:
+            bmp = potrace.Bitmap(~sub)
+            tr = bmp.trace(turdsize=turd, alphamax=alphamax, opticurve=True, opttolerance=0.2)
+            d = "".join(curv_d(cv, scale=sr) for cv in tr)
+        if not d:
+            continue
+        col = "#%02x%02x%02x" % tuple(int(round(v)) for v in centers[ci])
+        out.append('<path fill="%s" fill-rule="evenodd" data-step="%d" d="%s"/>' % (col, step, d))
+        used += n
+    if not out:
+        return "", 0
+    return ('<g transform="translate(%d %d)">%s</g>' % (x0, y0, "".join(out))), used
+
+
 def _render_file(target, png, W, H, step=None):
     import subprocess
     cmd = [sys.executable, str(Path(__file__).resolve().parent / "render.py"),
@@ -318,24 +417,22 @@ def main():
         elif a.startswith("--region="):
             txt = a.split("=", 1)[1]
             box_s, _, k_s = txt.partition(":")
-            try:
-                box = [int(round(float(v))) for v in box_s.split(",")]
-            except ValueError:
-                raise SystemExit("--region needs x0,y0,x1,y1:K (pixels, then colour count)")
-            if len(box) != 4 or not k_s:
-                raise SystemExit("--region needs x0,y0,x1,y1:K")
-            regions.append((box[0], box[1], box[2], box[3], int(k_s)))
+            regions.append(_parse_region(box_s, k_s))
         elif a == "--region":
             if nxt is None:
-                raise SystemExit("--region needs x0,y0,x1,y1:K")
+                raise SystemExit("--region needs x0,y0,x1,y1:K[,SS]")
             box_s, _, k_s = nxt.partition(":")
-            try:
-                box = [int(round(float(v))) for v in box_s.split(",")]
-            except ValueError:
-                raise SystemExit("--region needs x0,y0,x1,y1:K (pixels, then colour count)")
-            if len(box) != 4 or not k_s:
-                raise SystemExit("--region needs x0,y0,x1,y1:K")
-            regions.append((box[0], box[1], box[2], box[3], int(k_s)))
+            regions.append(_parse_region(box_s, k_s))
+            i += 1
+        elif a.startswith("--region-mask="):
+            # Windows 盘符里也有冒号，必须从右边切
+            m_s, _, k_s = a.split("=", 1)[1].rpartition(":")
+            regions.append(_parse_region_mask(m_s, k_s))
+        elif a == "--region-mask":
+            if nxt is None:
+                raise SystemExit("--region-mask needs FILE:K[,SS]")
+            m_s, _, k_s = nxt.rpartition(":")
+            regions.append(_parse_region_mask(m_s, k_s))
             i += 1
         elif a.startswith("--alpha-refine="):
             alpha_refine = int(a.split("=", 1)[1])
@@ -471,6 +568,21 @@ def main():
             edge_soften=edge_soften,
             options=process_options,
         )
+        if regions:
+            # 过程分支同样支持区域重绘：把区域层追加到过程画面之上（静态最终图）
+            extra = []
+            for spec in regions:
+                grp, used_r = trace_region(img, spec, 4, 1.0, sample_n=120000, step=99, ss_default=1)
+                if not grp:
+                    print("[vectorize] region %s produced nothing" % (spec.get("box"),), file=sys.stderr)
+                    continue
+                extra.append(grp)
+                print("[vectorize] process region box=%s K=%d ss=%s -> %d px"
+                      % (spec.get("box"), spec["k"], spec.get("ss"), used_r), file=sys.stderr)
+            if extra:
+                close = svg.rfind("</svg>")
+                if close > 0:
+                    svg = svg[:close] + "".join(extra) + svg[close:]
         if compact_flag:
             svg = svg_compact.compact_svg(svg, compact_precision)
         paths = svg.count("<path")
@@ -513,6 +625,7 @@ def main():
         from PIL import ImageFilter
         img = img.filter(ImageFilter.GaussianBlur(blur))
     W, H = img.size
+    base_img = img                      # 原分辨率副本：区域重绘用它，可按自己的 ss 采样
     if ss > 1:
         img = img.resize((W * ss, H * ss), Image.LANCZOS)
     if med >= 3:
@@ -616,41 +729,16 @@ def main():
         step = 1 + int(round(min(rank, n_layers - 1) * (MAXSTEP - 1) / max(1, n_layers - 1)))
         if d:
             paths.append('<path fill="%s" fill-rule="evenodd" data-step="%d" d="%s"/>' % (col, step, d))
-    for (rx0, ry0, rx1, ry1, rk) in regions:
-        # 局部重绘：把指定矩形用独立的色数重描一遍，覆盖在全局层之上。
-        # 人像的脸/手值得高色数，背景不值得——这就是"区域预算"。
-        rx0 = max(0, min(W - 1, int(rx0))); ry0 = max(0, min(H - 1, int(ry0)))
-        rx1 = max(rx0 + 1, min(W, int(rx1))); ry1 = max(ry0 + 1, min(H, int(ry1)))
-        crop = img.crop((rx0 * ss, ry0 * ss, rx1 * ss, ry1 * ss))
-        carr = np.asarray(crop, dtype=np.float32).reshape(-1, 3)
-        centers_r = make_centers(carr, rk)
-        if len(centers_r) == 0:
+    for spec in regions:
+        # 局部重绘：把指定区域用独立的色数（和可选的独立 ss）重描一遍，覆盖在全局层之上。
+        # 人像的脸/手值得高色数高分辨率，背景不值得——这就是"区域预算"。
+        grp, used_r = trace_region(base_img, spec, turd, alphamax, sample_n=sample_n, step=MAXSTEP, ss_default=ss)
+        if not grp:
+            print("[vectorize] region %s produced nothing" % (spec.get("box"),), file=sys.stderr)
             continue
-        lab_r = nearest(carr, centers_r).reshape(crop.size[1], crop.size[0])
-        area_r = 0
-        for ci in range(len(centers_r)):
-            sub = (lab_r == ci)
-            n_sub = int(sub.sum())
-            if n_sub < 8:
-                continue
-            full = np.zeros((H * ss, W * ss), bool)
-            full[ry0 * ss:ry1 * ss, rx0 * ss:rx1 * ss] = sub
-            if subject is not None:
-                full &= subject.reshape(H * ss, W * ss)
-            if not full.any():
-                continue
-            d = native_path(full, ss, turd, alphamax, 2)
-            if d is None:
-                bmp = potrace.Bitmap(~full)
-                tr = bmp.trace(turdsize=turd, alphamax=alphamax, opticurve=True, opttolerance=0.2)
-                d = "".join(curv_d(cv, scale=ss) for cv in tr)
-            if not d:
-                continue
-            col = "#%02x%02x%02x" % tuple(int(round(v)) for v in centers_r[ci])
-            paths.append('<path fill="%s" fill-rule="evenodd" data-step="%d" d="%s"/>' % (col, MAXSTEP, d))
-            area_r += n_sub
-        print("[vectorize] region x0=%d y0=%d x1=%d y1=%d K=%d -> %d px"
-              % (rx0, ry0, rx1, ry1, rk, area_r), file=sys.stderr)
+        paths.append(grp)
+        print("[vectorize] region box=%s K=%d ss=%s -> %d px"
+              % (spec.get("box"), spec["k"], spec.get("ss"), used_r), file=sys.stderr)
 
     if alpha_soften > 0:
         # 几何式边界软化：在每个色带外侧补 alpha 递减的环，让相邻色带之间
