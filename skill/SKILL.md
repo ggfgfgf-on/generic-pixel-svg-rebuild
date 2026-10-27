@@ -143,7 +143,9 @@ python <skill>/scripts/paint_process.py ref.png out.html --size 876x1904 --durat
 
 **`--edge-soften=SIGMA`：边缘柔化后处理（legacy，保留可用）。** 新交付优先用下面的 `--alpha-soften`；这个开关留着只是因为快速出图时它更省事（一步模糊，不用扫参）。 它直接作用于已完成 SVG（或 HTML 里的 SVG），只增加一个 `feGaussianBlur` 和一层包装，不改路径坐标、不改层序。适合“放大很多倍不要让 1px 阶梯很扎眼”的交付；副作用是整体轻微变软。想真正提高轮廓分辨率，应该提高 `ss`（如 3×），`--edge-soften` 只是最终视觉后处理。`svg_postprocess.py` 可独立对已有 SVG 跑，参数为 `--soften N`。
 
-**`--alpha-soften=N`：几何式边界软化。** 对每个色带在**外侧**补 N 圈 alpha 递减的 `<path>`（`fill-opacity` 依次 `strength`、`strength/2`…），把相邻色带之间从「1 级跳变」变成「N 级缓变」。纯几何实现，不引入滤镜或渐变，因此与 `--edge-soften` 互斥（同开会直接报错）。配套 `--alpha-width=PX`（默认 1.0，每圈宽度）与 `--alpha-strength=A`（默认 0.5，首圈 alpha）。
+**`--alpha-soften=N`：几何式边界软化。** 对每个色带在**外侧**补 N 圈 alpha 递减的 `<path>`（`fill-opacity` 依次 `strength`、`strength/2`…），把相邻色带之间从「1 级跳变」变成「N 级缓变」。纯几何实现，不引入滤镜或渐变，因此与 `--edge-soften` 互斥（同开会直接报错）。配套 `--alpha-width=PX`（默认 1.0，每圈宽度）、`--alpha-strength=A`（默认 0.5，首圈 alpha）、`--alpha-min-grad=G`（默认 0 = 不筛；只在参考图局部梯度 ≥G 处补环）。实测筛选会同时削弱收益：G=8 时强边 45,775、G=20 时 48,225（未筛 35,892），所以默认不筛。
+
+**为什么它会抬高 mean？** mean 是逐像素 RGB 偏差，而环会把边界像素主动推向邻色：参考图那里本来就是纯色时，这是净损失；只有那里真是渐变时才赚。所以它是**视觉目标**（少台阶）对**保真目标**（像原图）的交换，不是免费提升。想同时压低 mean 只能加层数（K），不是加环。
 
 实测 400×711、K=96/ss=1：基准 mean 6.06 / 强边 48,114 / mean_step 5.06；`--alpha-soften 2 --alpha-strength 0.25` → 7.06 / 35,892（-25%）/ 4.16；`--alpha-strength 0.5` → 7.99 / 32,112（-33%）/ 4.09；`--alpha-width 2` → 10.26 / 25,271 / 3.60。K=192/ss=2 时基准 4.82、8s、9.6MB；软化后 7.22、21s、40.9MB（强边 46,813→31,152）。它换的是「色阶断层更少」，代价是逐像素 mean 上升（环把边界推向邻色）与体积约 4×。要精度就关掉；要「看不出台阶」就开，建议从 `--alpha-soften 2 --alpha-strength 0.25` 起扫。
 

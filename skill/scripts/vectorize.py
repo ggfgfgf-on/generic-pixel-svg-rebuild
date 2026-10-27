@@ -163,6 +163,7 @@ def main():
     alpha_soften = 0
     alpha_width = 1.0
     alpha_strength = 0.5
+    alpha_min_grad = 0.0
     compact_flag = False
     compact_precision = 6
     process_final = False
@@ -303,6 +304,12 @@ def main():
             if nxt is None:
                 raise SystemExit("--alpha-strength needs a value")
             alpha_strength = float(nxt); i += 1
+        elif a.startswith("--alpha-min-grad="):
+            alpha_min_grad = float(a.split("=", 1)[1])
+        elif a == "--alpha-min-grad":
+            if nxt is None:
+                raise SystemExit("--alpha-min-grad needs a value")
+            alpha_min_grad = float(nxt); i += 1
         elif a.startswith("--alpha-width="):
             alpha_width = float(a.split("=", 1)[1])
         elif a == "--alpha-width":
@@ -326,6 +333,8 @@ def main():
         raise SystemExit("--alpha-soften must be 0..8")
     if alpha_width <= 0:
         raise SystemExit("--alpha-width must be > 0")
+    if alpha_min_grad < 0:
+        raise SystemExit("--alpha-min-grad must be >= 0")
     if not (0 < alpha_strength <= 1):
         raise SystemExit("--alpha-strength must be in (0, 1]")
     if alpha_soften and edge_soften:
@@ -560,6 +569,13 @@ def main():
         from scipy.ndimage import binary_dilation
         ring_step = max(1, int(round(alpha_width * ss)))
         valid = (lab >= 0)
+        if alpha_min_grad > 0:
+            # 只在"参考图本身就在变化"的地方补环：平坦色块上补环属于纯损失
+            gimg = np.asarray(img.convert("L"), dtype=np.float32)
+            gx = np.zeros_like(gimg); gy = np.zeros_like(gimg)
+            gx[:, 1:-1] = np.abs(gimg[:, 2:] - gimg[:, :-2])
+            gy[1:-1, :] = np.abs(gimg[2:, :] - gimg[:-2, :])
+            valid = valid & ((gx + gy) >= alpha_min_grad)
         ring_paths = []
         for area, c in areas:
             if area < 8:
