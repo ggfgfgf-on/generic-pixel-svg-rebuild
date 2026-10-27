@@ -166,6 +166,7 @@ def main():
     alpha_ramp = None              # None = auto (on for blending, off for reference-colour)
     alpha_true_color = 0
     alpha_min_err = 0.0
+    regions = []          # [(x0, y0, x1, y1, K)] 局部重绘：给指定区域独立色数
     alpha_refine = 0
     alpha_tol = 1.0
     compact_flag = False
@@ -314,6 +315,28 @@ def main():
                 raise SystemExit("--alpha-true-color must be >= 2")
         elif a == "--alpha-true-color":
             alpha_true_color = 3
+        elif a.startswith("--region="):
+            txt = a.split("=", 1)[1]
+            box_s, _, k_s = txt.partition(":")
+            try:
+                box = [int(round(float(v))) for v in box_s.split(",")]
+            except ValueError:
+                raise SystemExit("--region needs x0,y0,x1,y1:K (pixels, then colour count)")
+            if len(box) != 4 or not k_s:
+                raise SystemExit("--region needs x0,y0,x1,y1:K")
+            regions.append((box[0], box[1], box[2], box[3], int(k_s)))
+        elif a == "--region":
+            if nxt is None:
+                raise SystemExit("--region needs x0,y0,x1,y1:K")
+            box_s, _, k_s = nxt.partition(":")
+            try:
+                box = [int(round(float(v))) for v in box_s.split(",")]
+            except ValueError:
+                raise SystemExit("--region needs x0,y0,x1,y1:K (pixels, then colour count)")
+            if len(box) != 4 or not k_s:
+                raise SystemExit("--region needs x0,y0,x1,y1:K")
+            regions.append((box[0], box[1], box[2], box[3], int(k_s)))
+            i += 1
         elif a.startswith("--alpha-refine="):
             alpha_refine = int(a.split("=", 1)[1])
         elif a == "--alpha-refine":
@@ -593,6 +616,42 @@ def main():
         step = 1 + int(round(min(rank, n_layers - 1) * (MAXSTEP - 1) / max(1, n_layers - 1)))
         if d:
             paths.append('<path fill="%s" fill-rule="evenodd" data-step="%d" d="%s"/>' % (col, step, d))
+    for (rx0, ry0, rx1, ry1, rk) in regions:
+        # 局部重绘：把指定矩形用独立的色数重描一遍，覆盖在全局层之上。
+        # 人像的脸/手值得高色数，背景不值得——这就是"区域预算"。
+        rx0 = max(0, min(W - 1, int(rx0))); ry0 = max(0, min(H - 1, int(ry0)))
+        rx1 = max(rx0 + 1, min(W, int(rx1))); ry1 = max(ry0 + 1, min(H, int(ry1)))
+        crop = img.crop((rx0 * ss, ry0 * ss, rx1 * ss, ry1 * ss))
+        carr = np.asarray(crop, dtype=np.float32).reshape(-1, 3)
+        centers_r = make_centers(carr, rk)
+        if len(centers_r) == 0:
+            continue
+        lab_r = nearest(carr, centers_r).reshape(crop.size[1], crop.size[0])
+        area_r = 0
+        for ci in range(len(centers_r)):
+            sub = (lab_r == ci)
+            n_sub = int(sub.sum())
+            if n_sub < 8:
+                continue
+            full = np.zeros((H * ss, W * ss), bool)
+            full[ry0 * ss:ry1 * ss, rx0 * ss:rx1 * ss] = sub
+            if subject is not None:
+                full &= subject.reshape(H * ss, W * ss)
+            if not full.any():
+                continue
+            d = native_path(full, ss, turd, alphamax, 2)
+            if d is None:
+                bmp = potrace.Bitmap(~full)
+                tr = bmp.trace(turdsize=turd, alphamax=alphamax, opticurve=True, opttolerance=0.2)
+                d = "".join(curv_d(cv, scale=ss) for cv in tr)
+            if not d:
+                continue
+            col = "#%02x%02x%02x" % tuple(int(round(v)) for v in centers_r[ci])
+            paths.append('<path fill="%s" fill-rule="evenodd" data-step="%d" d="%s"/>' % (col, MAXSTEP, d))
+            area_r += n_sub
+        print("[vectorize] region x0=%d y0=%d x1=%d y1=%d K=%d -> %d px"
+              % (rx0, ry0, rx1, ry1, rk, area_r), file=sys.stderr)
+
     if alpha_soften > 0:
         # 几何式边界软化：在每个色带外侧补 alpha 递减的环，让相邻色带之间
         # 从"1 级跳变"变成"N 级缓变"。不用渐变、不用滤镜，纯 <path> + fill-opacity。
