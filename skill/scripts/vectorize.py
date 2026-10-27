@@ -164,6 +164,9 @@ def main():
     alpha_width = 1.0
     alpha_strength = 0.5
     alpha_min_grad = 0.0
+    alpha_ramp = False
+    alpha_true_color = 0
+    alpha_tc_alpha = 1.0
     compact_flag = False
     compact_precision = 6
     process_final = False
@@ -304,6 +307,20 @@ def main():
             if nxt is None:
                 raise SystemExit("--alpha-strength needs a value")
             alpha_strength = float(nxt); i += 1
+        elif a.startswith("--alpha-tc-alpha="):
+            alpha_tc_alpha = float(a.split("=", 1)[1])
+        elif a == "--alpha-tc-alpha":
+            if nxt is None:
+                raise SystemExit("--alpha-tc-alpha needs a value")
+            alpha_tc_alpha = float(nxt); i += 1
+        elif a.startswith("--alpha-true-color="):
+            alpha_true_color = int(a.split("=", 1)[1])
+            if alpha_true_color < 2:
+                raise SystemExit("--alpha-true-color must be >= 2")
+        elif a == "--alpha-true-color":
+            alpha_true_color = 3
+        elif a == "--alpha-ramp":
+            alpha_ramp = True
         elif a.startswith("--alpha-min-grad="):
             alpha_min_grad = float(a.split("=", 1)[1])
         elif a == "--alpha-min-grad":
@@ -569,6 +586,20 @@ def main():
         from scipy.ndimage import binary_dilation
         ring_step = max(1, int(round(alpha_width * ss)))
         valid = (lab >= 0)
+        px_all = np.asarray(img, dtype=np.float32).reshape(-1, 3)
+        if alpha_ramp:
+            # 只软"该软的地方"：参考图在这条边界上本来就是一段缓变（5x5 邻域的
+            # 色差中等、细梯度很小）。硬边（1px 跳变）和平坦色块都不补环。
+            from scipy.ndimage import maximum_filter, minimum_filter
+            gl = np.asarray(img.convert("L"), dtype=np.float32)
+            lo = minimum_filter(gl, size=5)
+            hi = maximum_filter(gl, size=5)
+            span = hi - lo
+            gx = np.zeros_like(gl); gy = np.zeros_like(gl)
+            gx[:, 1:-1] = np.abs(gl[:, 2:] - gl[:, :-2])
+            gy[1:-1, :] = np.abs(gl[2:, :] - gl[:-2, :])
+            fine = gx + gy
+            valid = valid & (span >= 6) & (span <= 72) & (fine <= 14)
         if alpha_min_grad > 0:
             # 只在"参考图本身就在变化"的地方补环：平坦色块上补环属于纯损失
             gimg = np.asarray(img.convert("L"), dtype=np.float32)
@@ -595,8 +626,35 @@ def main():
                     tr = bmp.trace(turdsize=turd, alphamax=alphamax, opticurve=True, opttolerance=0.2)
                     d = "".join(curv_d(cv, scale=ss) for cv in tr)
                 if d:
-                    ring_paths.append('<path fill="%s" fill-opacity="%.3f" data-step="0" d="%s"/>'
-                                      % (col, alpha_strength * (0.5 ** (k - 1)), d))
+                    if alpha_true_color:
+                        # 环按参考亮度再切 S 段，每段用该段真实均值色：等于在该边界
+                        # 临时提高色阶密度，这才可能把 mean 压下去（不是靠 alpha 混合）
+                        idx = np.flatnonzero(ring.reshape(-1))
+                        ring_lum = px_all[idx].mean(axis=1)
+                        edges_q = np.quantile(ring_lum, np.linspace(0, 1, alpha_true_color + 1))
+                        for j in range(alpha_true_color):
+                            sel = (ring_lum >= edges_q[j]) & (
+                                ring_lum <= edges_q[j + 1] if j == alpha_true_color - 1
+                                else ring_lum < edges_q[j + 1])
+                            if int(sel.sum()) < 8:
+                                continue
+                            chosen = idx[sel]
+                            rc = px_all[chosen].mean(axis=0)
+                            flat = np.zeros(ring.size, bool)
+                            flat[chosen] = True
+                            sub = flat.reshape(ring.shape)
+                            d2 = native_path(sub, ss, turd, alphamax, 2)
+                            if d2 is None:
+                                tr2 = potrace.Bitmap(~sub).trace(turdsize=turd, alphamax=alphamax,
+                                                                 opticurve=True, opttolerance=0.2)
+                                d2 = "".join(curv_d(cv, scale=ss) for cv in tr2)
+                            if d2:
+                                ring_paths.append('<path fill="#%02x%02x%02x" fill-opacity="%.3f" data-step="0" d="%s"/>'
+                                                  % (int(round(rc[0])), int(round(rc[1])), int(round(rc[2])),
+                                                     alpha_tc_alpha, d2))
+                    else:
+                        ring_paths.append('<path fill="%s" fill-opacity="%.3f" data-step="0" d="%s"/>'
+                                          % (col, alpha_strength * (0.5 ** (k - 1)), d))
         paths.extend(ring_paths)
         print("[vectorize] alpha-soften: %d ring(s) of %d mask px -> %d paths"
               % (alpha_soften, ring_step, len(ring_paths)), file=sys.stderr)
