@@ -171,8 +171,12 @@ python <skill>/scripts/ink.py ref.png --style poster --method sauvola --out post
 # 线稿层：边缘 → 细化 → 描边；dilate=0 是发丝线
 python <skill>/scripts/ink.py ref.png --style line --lo 110 --hi 240 --dilate 0 --out line.svg
 
-# 两层叠起来（poster 打底，line 压上）
-python <skill>/scripts/ink.py ref.png --style both --out comic.svg --outdir layers
+# 两层叠起来（poster 打底，line 压上）；不给 --out 时写 outdir/composed.svg，不覆盖单层
+python <skill>/scripts/ink.py ref.png --style both --outdir layers
+
+# 彩色底 + 彩色线：先把彩色底生成出来，再把无背景的线层叠上去
+python <skill>/scripts/vectorize.py ref.png base.svg 16 4 1.0 1 0.3 2 0
+python <skill>/scripts/ink.py ref.png --style line --line-per-stroke --compose base.svg --out comic.svg
 ```
 
 实测 400×711 人像：

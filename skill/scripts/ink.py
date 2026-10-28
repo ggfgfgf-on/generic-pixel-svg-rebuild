@@ -98,12 +98,27 @@ def per_stroke(mask, rgb, turd, darken, min_px):
     return out
 
 
-def write_svg(path, W, H, ds, fill):
+def write_svg(path, W, H, ds, fill, bg=True):
     body = "".join('<path fill="%s" fill-rule="evenodd" d="%s"/>' % (fill, d) for d in ds)
+    rect = ('<rect width="%d" height="%d" fill="#ffffff"/>' % (W, H)) if bg else ""
     with open(path, "w", encoding="utf-8") as fh:
         fh.write('<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 %d %d">'
-                 '<rect width="%d" height="%d" fill="#ffffff"/>%s</svg>'
-                 % (W, H, W, H, W, H, body))
+                 '%s%s</svg>' % (W, H, W, H, rect, body))
+
+
+def compose(base_svg, top_svg, out_svg):
+    """把上层（必须无背景）的 path 插到 base 的 </svg> 之前。"""
+    with open(base_svg, "r", encoding="utf-8") as fh:
+        base = fh.read()
+    with open(top_svg, "r", encoding="utf-8") as fh:
+        top = fh.read()
+    inner = top.split(">", 1)[1].rsplit("</svg>", 1)[0]
+    close = base.rfind("</svg>")
+    if close < 0:
+        raise SystemExit("base svg has no closing tag")
+    with open(out_svg, "w", encoding="utf-8") as fh:
+        fh.write(base[:close] + inner + base[close:])
+    return os.path.getsize(out_svg) / 1024.0
 
 
 def main():
@@ -130,6 +145,10 @@ def main():
     ap.add_argument("--line-per-stroke", action="store_true",
                     help="每条连通线单独取色（线数=颜色数）")
     ap.add_argument("--min-stroke-px", type=int, default=1)
+    ap.add_argument("--no-bg", action="store_true", help="不写白底矩形，方便叠加")
+    ap.add_argument("--compose", default="", help="把线层叠到这张已有 SVG 上（彩色底 + 线）")
+    ap.add_argument("--method-poster", default="", help="海报层单独指定方法")
+    ap.add_argument("--method-line", default="", help="线稿层单独指定方法")
     a = ap.parse_args()
 
     img = cv2.imread(a.ref, cv2.IMREAD_GRAYSCALE)
@@ -141,11 +160,9 @@ def main():
 
     jobs = []
     if a.style in ("poster", "both"):
-        jobs.append(("poster", a.method or "sauvola"))
+        jobs.append(("poster", a.method_poster or a.method or "sauvola"))
     if a.style in ("line", "both"):
-        jobs.append(("line", a.method or "canny"))
-    if a.style == "both" and a.method:
-        jobs = [("poster", a.method), ("line", a.method)]
+        jobs.append(("line", a.method_line or a.method or "canny"))
 
     outdir = a.outdir or (os.path.dirname(os.path.abspath(a.out)) if a.out else ".")
     os.makedirs(outdir, exist_ok=True)
@@ -166,13 +183,14 @@ def main():
                 parts = per_stroke(m, rgb, a.turd, a.darken, a.min_stroke_px)
                 fills = sorted(set(f for f, _ in parts))
                 body = "".join('<path fill="%s" fill-rule="evenodd" d="%s"/>' % (f, d) for f, d in parts)
+                rect = "" if (a.no_bg or a.style == "both" or a.compose) else (
+                    '<rect width="%d" height="%d" fill="#ffffff"/>' % (W, H))
                 with open(out, "w", encoding="utf-8") as fh:
                     fh.write('<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" '
-                             'viewBox="0 0 %d %d"><rect width="%d" height="%d" fill="#ffffff"/>%s</svg>'
-                             % (W, H, W, H, W, H, body))
+                             'viewBox="0 0 %d %d">%s%s</svg>' % (W, H, W, H, rect, body))
                 report["layers"].append({"style": style, "method": method, "source": a.line_source,
                                          "front_px": int(m.sum()), "paths": len(parts),
-                                         "colours": len(fills), "sample": fills[:6],
+                                         "colours": len(fills), "bg": bool(rect), "sample": fills[:6],
                                          "kb": round(os.path.getsize(out) / 1024, 1), "svg": out})
                 continue
             skel = m
@@ -198,35 +216,37 @@ def main():
                 colours.append(fill)
                 ds_all.extend((fill, d) for d in trace_mask(g, a.turd))
             body = "".join('<path fill="%s" fill-rule="evenodd" d="%s"/>' % (f, d) for f, d in ds_all)
+            rect = "" if (a.no_bg or a.style == "both" or a.compose) else (
+                '<rect width="%d" height="%d" fill="#ffffff"/>' % (W, H))
             with open(out, "w", encoding="utf-8") as fh:
                 fh.write('<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" '
-                         'viewBox="0 0 %d %d"><rect width="%d" height="%d" fill="#ffffff"/>%s</svg>'
-                         % (W, H, W, H, W, H, body))
+                         'viewBox="0 0 %d %d">%s%s</svg>' % (W, H, W, H, rect, body))
             report["layers"].append({"style": style, "method": method, "front_px": fronts,
-                                     "paths": len(ds_all), "colours": colours,
+                                     "paths": len(ds_all), "colours": colours, "bg": bool(rect),
                                      "kb": round(os.path.getsize(out) / 1024, 1), "svg": out})
             continue
 
         ds = trace_mask(m, a.turd)
-        write_svg(out, W, H, ds, a.poster_color)
+        write_svg(out, W, H, ds, a.poster_color, bg=not a.no_bg)
         report["layers"].append({"style": style, "method": method,
-                                 "front_px": int(m.sum()), "paths": len(ds),
+                                 "front_px": int(m.sum()), "paths": len(ds), "bg": not a.no_bg,
                                  "kb": round(os.path.getsize(out) / 1024, 1),
                                  "svg": out})
 
-    if a.style == "both" and a.out:
-        # 合成：poster 打底，line 压在上面
-        post = report["layers"][0]["svg"]
-        line = report["layers"][1]["svg"]
-        with open(post, "r", encoding="utf-8") as fh:
-            base = fh.read()
-        with open(line, "r", encoding="utf-8") as fh:
-            top = fh.read()
-        inner = top.split("</svg>")[0].split(">", 1)[1]
-        close = base.rfind("</svg>")
-        with open(a.out, "w", encoding="utf-8") as fh:
-            fh.write(base[:close] + inner + base[close:])
-        report["composed"] = {"svg": a.out, "kb": round(os.path.getsize(a.out) / 1024, 1)}
+    line_layer = next((l for l in report["layers"] if l["style"] == "line"), None)
+    if a.compose:
+        if line_layer is None:
+            raise SystemExit("--compose needs the line layer (use --style line/both)")
+        kb = compose(a.compose, line_layer["svg"], a.out or line_layer["svg"])
+        report["composed"] = {"base": a.compose, "line": line_layer["svg"],
+                              "svg": a.out or line_layer["svg"], "kb": round(kb, 1)}
+    elif a.style == "both":
+        post = next(l for l in report["layers"] if l["style"] == "poster")
+        # 没给 --out 时不要覆盖 poster 层，另写 composed.svg
+        target = a.out or os.path.join(outdir, "composed.svg")
+        kb = compose(post["svg"], line_layer["svg"], target)
+        report["composed"] = {"base": post["svg"], "line": line_layer["svg"],
+                              "svg": target, "kb": round(kb, 1)}
 
     print(json.dumps(report, ensure_ascii=False))
 
