@@ -105,6 +105,43 @@ def palette_native(px, k):
     return native_loader.palette_centers(px, k)
 
 
+def _k_label(spec):
+    """日志用：绝对值直接印数字，倍数印 3x。"""
+    if spec.get("k") is not None:
+        return str(spec["k"])
+    return "%gx" % float(spec["kmul"])
+
+
+def _parse_k(k_s, flag):
+    """K 支持三种写法：384（绝对值）、3x（全局 K 的倍数）、384,2 / 3x,2（带 ss）。"""
+    k_part, _, ss_part = k_s.partition(",")
+    kmul = None
+    k = None
+    if k_part.lower().endswith("x"):
+        try:
+            kmul = float(k_part[:-1])
+        except ValueError:
+            raise SystemExit("%s multiplier must look like 3x" % flag)
+        if not (0.1 <= kmul <= 32):
+            raise SystemExit("%s multiplier must be 0.1..32" % flag)
+    else:
+        try:
+            k = int(k_part)
+        except ValueError:
+            raise SystemExit("%s colour count must be an integer or Nx" % flag)
+        if not (2 <= k <= 4096):
+            raise SystemExit("%s colour count must be 2..4096" % flag)
+    sr = None
+    if ss_part:
+        try:
+            sr = int(ss_part)
+        except ValueError:
+            raise SystemExit("%s ss must be an integer" % flag)
+        if not (1 <= sr <= 4):
+            raise SystemExit("%s ss must be 1..4" % flag)
+    return k, kmul, sr
+
+
 def _parse_region(box_s, k_s):
     try:
         box = [int(round(float(v))) for v in box_s.split(",")]
@@ -112,34 +149,21 @@ def _parse_region(box_s, k_s):
         raise SystemExit("--region needs x0,y0,x1,y1:K[,SS] (source pixels, colour count, optional ss)")
     if len(box) != 4 or not k_s:
         raise SystemExit("--region needs x0,y0,x1,y1:K[,SS]")
-    k_part, _, ss_part = k_s.partition(",")
-    try:
-        k = int(k_part)
-        sr = int(ss_part) if ss_part else None
-    except ValueError:
-        raise SystemExit("--region colour count and ss must be integers")
-    if sr is not None and not (1 <= sr <= 4):
-        raise SystemExit("--region ss must be 1..4")
-    return {"box": (box[0], box[1], box[2], box[3]), "k": k, "ss": sr, "mask": None}
+    k_spec = _parse_k(k_s, "--region")
+    return {"box": (box[0], box[1], box[2], box[3]), "k": k_spec[0], "kmul": k_spec[1],
+            "ss": k_spec[2], "mask": None}
 
 
 def _parse_region_mask(path_s, k_s):
     from PIL import Image as _Image
     if not path_s or not k_s:
         raise SystemExit("--region-mask needs FILE:K[,SS]")
-    k_part, _, ss_part = k_s.partition(",")
     mask = _Image.open(path_s).convert("L")
-    try:
-        k = int(k_part)
-        sr = int(ss_part) if ss_part else None
-    except ValueError:
-        raise SystemExit("--region-mask colour count and ss must be integers")
-    if sr is not None and not (1 <= sr <= 4):
-        raise SystemExit("--region-mask ss must be 1..4")
-    return {"box": None, "k": k, "ss": sr, "mask": mask}
+    k_spec = _parse_k(k_s, "--region-mask")
+    return {"box": None, "k": k_spec[0], "kmul": k_spec[1], "ss": k_spec[2], "mask": mask}
 
 
-def trace_region(base_img, spec, turd, alphamax, sample_n=240000, step=999, ss_default=1):
+def trace_region(base_img, spec, turd, alphamax, sample_n=240000, step=999, ss_default=1, global_k=0):
     """Trace one region at its own colour budget and (optional) own supersampling.
 
     spec = {"box": (x0, y0, x1, y1) or None, "k": K, "ss": ss or None,
@@ -170,7 +194,12 @@ def trace_region(base_img, spec, turd, alphamax, sample_n=240000, step=999, ss_d
     if sr != 1:
         crop = crop.resize((cw * sr, ch * sr), Image.LANCZOS)
     carr = np.asarray(crop, dtype=np.float32).reshape(-1, 3)
-    k = int(spec["k"])
+    if spec.get("kmul"):
+        # 相对预算：区域色数 = 全局 K × 倍数，随预设/全局 K 一起缩放
+        k = int(round(float(global_k) * float(spec["kmul"]))) if global_k else int(round(16 * float(spec["kmul"])))
+        k = max(8, min(4096, k))
+    else:
+        k = int(spec["k"])
     boxes = median_cut(_palette_sample(carr, sample_n), k)
     centers = np.array([b.mean(0) for b in boxes], dtype=np.float32)
     if len(centers) == 0:
@@ -572,13 +601,14 @@ def main():
             # 过程分支同样支持区域重绘：把区域层追加到过程画面之上（静态最终图）
             extra = []
             for spec in regions:
-                grp, used_r = trace_region(img, spec, 4, 1.0, sample_n=120000, step=99, ss_default=1)
+                grp, used_r = trace_region(img, spec, 4, 1.0, sample_n=120000, step=99, ss_default=1,
+                                           global_k=K)
                 if not grp:
                     print("[vectorize] region %s produced nothing" % (spec.get("box"),), file=sys.stderr)
                     continue
                 extra.append(grp)
-                print("[vectorize] process region box=%s K=%d ss=%s -> %d px"
-                      % (spec.get("box"), spec["k"], spec.get("ss"), used_r), file=sys.stderr)
+                print("[vectorize] process region box=%s K=%s ss=%s -> %d px"
+                      % (spec.get("box"), _k_label(spec), spec.get("ss"), used_r), file=sys.stderr)
             if extra:
                 close = svg.rfind("</svg>")
                 if close > 0:
@@ -732,13 +762,14 @@ def main():
     for spec in regions:
         # 局部重绘：把指定区域用独立的色数（和可选的独立 ss）重描一遍，覆盖在全局层之上。
         # 人像的脸/手值得高色数高分辨率，背景不值得——这就是"区域预算"。
-        grp, used_r = trace_region(base_img, spec, turd, alphamax, sample_n=sample_n, step=MAXSTEP, ss_default=ss)
+        grp, used_r = trace_region(base_img, spec, turd, alphamax, sample_n=sample_n, step=MAXSTEP,
+                                   ss_default=ss, global_k=K)
         if not grp:
             print("[vectorize] region %s produced nothing" % (spec.get("box"),), file=sys.stderr)
             continue
         paths.append(grp)
-        print("[vectorize] region box=%s K=%d ss=%s -> %d px"
-              % (spec.get("box"), spec["k"], spec.get("ss"), used_r), file=sys.stderr)
+        print("[vectorize] region box=%s K=%s ss=%s -> %d px"
+              % (spec.get("box"), _k_label(spec), spec.get("ss"), used_r), file=sys.stderr)
 
     if alpha_soften > 0:
         # 几何式边界软化：在每个色带外侧补 alpha 递减的环，让相邻色带之间
