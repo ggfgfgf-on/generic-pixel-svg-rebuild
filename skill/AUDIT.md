@@ -44,7 +44,19 @@
 | “元素级/平铺/多边形可用” | 能用，但 `auto.py` 不暴露 |
 | `main()` 内局部 `import shutil` 曾导致 UnboundLocalError | 已修（本轮） |
 
-## 5. 建议修复顺序
+## 5. 修复状态（本轮已全部完成）
+
+| 问题 | 状态 | 证据 |
+|---|---|---|
+| auto.py 无新预算透传 | 已修 | `--elements/--elements-refine/--tile/--region-poly/--palette-shared` 透传并在报告里回显 |
+| 新能力零测试 | 已修 | 15 例，新增 elements-budget / elements-refine / tile-budget / poly-region，`RESULT: PASS` |
+| 弃用分支仍在判分 | 已修 | 两例标 `gate=False` → `info_only`，跑但不算红绿 |
+| 三个孤立模块 | 已处理 | `seal_gaps` 接入 `--seal-gaps`；`steps.py`/`smooth_svg.py` 在 SKILL.md 标明独立工具与依赖 |
+| 发布脚本静默失败 | 已修 | `release.ps1`：`$ErrorActionPreference='Stop'` + 提交/推送/资产四项断言；原生命令单独取 `$LASTEXITCODE` |
+
+实测收益：`auto.py --preset illustration --elements 16:800:384,2` 在 ref-star 上 mean **5.14**（8.2 MB），优于手调 6.08。
+
+## 6. 建议修复顺序（历史，已完成）
 
 1. `auto.py` 增加 `--elements`/`--tile`/`--region-poly` 透传（半天内可完成，收益最直接）
 2. 给 `--elements` + `--elements-refine` 加 1 个回归用例（小图 + 断言 mean 下降、uncovered=0）
