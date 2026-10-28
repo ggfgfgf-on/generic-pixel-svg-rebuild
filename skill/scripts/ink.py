@@ -70,7 +70,7 @@ def curv_d_offset(trace, ox=0.0, oy=0.0):
 def trace_mask(mask, turd):
     bmp = potrace.Bitmap(~mask)
     tr = bmp.trace(turdsize=turd, alphamax=1.0, opticurve=True, opttolerance=0.2)
-    return curv_d(tr)
+    return curv_d_offset(tr, 0.0, 0.0)
 
 
 def trace_parts(mask, turd, ox=0, oy=0):
@@ -113,7 +113,8 @@ def main():
     ap.add_argument("--method", default="", help="canny|sauvola|adaptive (default: sauvola for poster, canny for line)")
     ap.add_argument("--out", default="")
     ap.add_argument("--outdir", default="")
-    ap.add_argument("--dilate", type=int, default=1, help="line width in px (0 = hairline skeleton)")
+    ap.add_argument("--dilate", type=int, default=0,
+                    help="line width in px; 0 = hairline (complete, matches a raw edge trace)")
     ap.add_argument("--turd", type=int, default=4, help="drop specks smaller than this")
     ap.add_argument("--block", type=int, default=31)
     ap.add_argument("--k", type=float, default=0.2)
@@ -128,7 +129,7 @@ def main():
                     help="edges=直接描边（线更完整）；skeleton=细化后再描（可调粗）")
     ap.add_argument("--line-per-stroke", action="store_true",
                     help="每条连通线单独取色（线数=颜色数）")
-    ap.add_argument("--min-stroke-px", type=int, default=25)
+    ap.add_argument("--min-stroke-px", type=int, default=1)
     a = ap.parse_args()
 
     img = cv2.imread(a.ref, cv2.IMREAD_GRAYSCALE)
