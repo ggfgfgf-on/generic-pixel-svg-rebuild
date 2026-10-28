@@ -131,6 +131,14 @@ python <skill>/scripts/iterate.py ref.png out.svg --base "..." --patch patch.jso
 | `style` | 用新参数**整幅重跑**（K/turd/alphamax/dil/blur/ss） | 换画风：平涂、描边、粗线 |
 | `remap` | 改颜色：`from/to/tol` 或整幅贴合 `to_palette` | 统一色调、海报化、限定色板 |
 | `draw` | 注入模型自己写的 path `d` | 补细节、加签名、**从零作画** |
+| `drop` | 删路径：`ids:[..]` 或 `where:{fill:"#rrggbb"}` | 去掉描歪的线、噪点层 |
+| `recolor` | 改路径颜色（同上选择器） | 局部修色 |
+| `redraw` | 替换某条路径的 `d`（和可选 `fill`） | 改一根线的走向 |
+| `reorder` | 把选中的路径移到最上层 | 修遮挡顺序 |
+
+**路径句柄**：只有出现 `drop/recolor/redraw/reorder` 时才给每条 `<path>` 注入 `id="pN"`（发射顺序），默认输出**一字节不变**。`ids` 用的就是这个 N。
+
+`redraw` 只换几何**不换层级**——它留在原 z 序上，所以“补一条盖住别人的线”要用 `draw`，“改一根已有线的走向”才用 `redraw`。
 
 **从零作画**：`--blank 420x300` 从空白画布起步，内容全靠 `draw` 给（不需要参考图、不跑描摹）：
 

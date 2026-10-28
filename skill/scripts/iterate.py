@@ -16,6 +16,7 @@ global_K * k-mult, which is the cheap baseline the model can then refine.
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -29,6 +30,73 @@ PY = sys.executable
 
 def run(cmd):
     return subprocess.run(cmd, capture_output=True, text=True)
+
+
+PATH_RE = re.compile(r"<path\b[^>]*/>", re.S)
+
+
+def tag_attrs(tag):
+    return dict(re.findall(r'([\w-]+)="([^"]*)"', tag))
+
+
+def inject_ids(text):
+    """给每条 path 一个稳定 id（发射顺序），后面的 drop/recolor/redraw 才有把手。"""
+    n = [0]
+
+    def repl(m):
+        n[0] += 1
+        tag = m.group(0)
+        if 'id="' in tag:
+            return tag
+        return tag.replace("<path", '<path id="p%d"' % n[0], 1)
+
+    return PATH_RE.sub(repl, text)
+
+
+def path_selected(attrs, op):
+    if op.get("ids"):
+        wanted = set("p%d" % int(i) for i in op["ids"])
+        return attrs.get("id") in wanted
+    w = op.get("where") or {}
+    if "fill" in w:
+        return attrs.get("fill", "").lower() == str(w["fill"]).lower()
+    if "id" in w:
+        return attrs.get("id") == ("p%d" % int(w["id"])) or attrs.get("id") == str(w["id"])
+    return False
+
+
+def apply_path_op(text, op):
+    """drop / recolor / redraw / reorder —— 一次扫描完成，避免下标漂移。"""
+    kind = op["op"]
+    out, last, moved = [], 0, []
+    for m in PATH_RE.finditer(text):
+        attrs = tag_attrs(m.group(0))
+        if not path_selected(attrs, op):
+            continue
+        tag = m.group(0)
+        if kind == "drop":
+            out.append(text[last:m.start()])
+        elif kind == "recolor":
+            out.append(text[last:m.start()])
+            out.append(re.sub(r'fill="[^"]*"', 'fill="%s"' % op.get("to", "#000000"), tag, count=1))
+        elif kind == "redraw":
+            out.append(text[last:m.start()])
+            if op.get("d"):
+                tag = re.sub(r'd="[^"]*"', 'd="%s"' % op["d"], tag, count=1)
+            if op.get("fill"):
+                tag = re.sub(r'fill="[^"]*"', 'fill="%s"' % op["fill"], tag, count=1)
+            out.append(tag)
+        elif kind == "reorder":
+            out.append(text[last:m.start()])
+            moved.append(tag)
+        last = m.end()
+    out.append(text[last:])
+    text = "".join(out)
+    if kind == "reorder" and moved:
+        close = text.rfind("</svg>")
+        if close > 0:
+            text = text[:close] + "".join(moved) + text[close:]
+    return text
 
 
 def render(svg, png, W, H):
@@ -109,7 +177,7 @@ def main():
             if kind == "region":
                 regions.append({"box": list(op["box"]), "k": op.get("k"), "ss": op.get("ss"),
                                 "source": "model"})
-            elif kind in ("remap", "draw"):
+            elif kind in ("remap", "draw", "drop", "recolor", "redraw", "reorder"):
                 text_ops.append(op)
             elif kind == "style":
                 # 整幅按画风重跑：只覆盖给定的项，其余继承 base
@@ -143,13 +211,14 @@ def main():
                     rgb = np.array([int(h[1:3], 16), int(h[3:5], 16), int(h[5:7], 16)], dtype=np.float32)
                     return ('fill="%s"' % dst) if np.abs(rgb - src).max() <= tol else m.group(0)
                 text = re.sub(r'fill="(#[0-9a-fA-F]{6})"', swap, text)
-        draws = [op for op in ops if op.get("op") == "draw"]
-        if draws:
-            extra = "".join('<path fill="%s" fill-rule="evenodd" data-step="99" d="%s"/>'
-                            % (op.get("fill", "#000000"), op["d"]) for op in draws)
-            close = text.rfind("</svg>")
-            if close > 0:
-                text = text[:close] + extra + text[close:]
+            elif op.get("op") == "draw":
+                extra = ('<path fill="%s" fill-rule="evenodd" data-step="99" d="%s"/>'
+                         % (op.get("fill", "#000000"), op["d"]))
+                close = text.rfind("</svg>")
+                if close > 0:
+                    text = text[:close] + extra + text[close:]
+            elif op.get("op") in ("drop", "recolor", "redraw", "reorder"):
+                text = apply_path_op(text, op)
         return text
 
     def build(tag):
@@ -162,7 +231,7 @@ def main():
             b = None
             if text_ops:
                 with open(svg, "r", encoding="utf-8") as fh:
-                    t = fh.read()
+                    t = inject_ids(fh.read())
                 with open(svg, "w", encoding="utf-8") as fh:
                     fh.write(apply_text_ops(t, text_ops))
             if not render(svg, png, W, H):
@@ -178,8 +247,11 @@ def main():
         if not os.path.exists(svg):
             return None, None, (b.stderr or b.stdout).strip()[-200:]
         if text_ops:
+            need_ids = any(op.get("op") in ("drop", "recolor", "redraw", "reorder") for op in text_ops)
             with open(svg, "r", encoding="utf-8") as fh:
                 t = fh.read()
+            if need_ids:
+                t = inject_ids(t)     # 只在需要动刀时才加 id，默认输出不变
             with open(svg, "w", encoding="utf-8") as fh:
                 fh.write(apply_text_ops(t, text_ops))
         if not render(svg, png, W, H):
