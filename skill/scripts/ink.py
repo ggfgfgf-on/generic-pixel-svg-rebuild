@@ -49,18 +49,20 @@ def mask_for(gray, method, block, k, lo, hi):
     raise SystemExit("unknown method: %s" % method)
 
 
-def curv_d(trace):
+def curv_d_offset(trace, ox=0.0, oy=0.0):
     d = []
     for cv_ in trace:
         if not cv_.segments:
             continue
-        s = "M%.1f %.1f" % (cv_.start_point.x, cv_.start_point.y)
+        s = "M%.1f %.1f" % (cv_.start_point.x + ox, cv_.start_point.y + oy)
         for sg in cv_.segments:
             if sg.is_corner:
-                s += " L%.1f %.1f L%.1f %.1f" % (sg.c.x, sg.c.y, sg.end_point.x, sg.end_point.y)
+                s += " L%.1f %.1f L%.1f %.1f" % (sg.c.x + ox, sg.c.y + oy,
+                                                 sg.end_point.x + ox, sg.end_point.y + oy)
             else:
-                s += " C%.1f %.1f %.1f %.1f %.1f %.1f" % (sg.c1.x, sg.c1.y, sg.c2.x,
-                                                          sg.c2.y, sg.end_point.x, sg.end_point.y)
+                s += " C%.1f %.1f %.1f %.1f %.1f %.1f" % (sg.c1.x + ox, sg.c1.y + oy,
+                                                          sg.c2.x + ox, sg.c2.y + oy,
+                                                          sg.end_point.x + ox, sg.end_point.y + oy)
         d.append(s + " Z")
     return d
 
@@ -69,6 +71,31 @@ def trace_mask(mask, turd):
     bmp = potrace.Bitmap(~mask)
     tr = bmp.trace(turdsize=turd, alphamax=1.0, opticurve=True, opttolerance=0.2)
     return curv_d(tr)
+
+
+def trace_parts(mask, turd, ox=0, oy=0):
+    """单块 mask -> d 列表（可带偏移），per-stroke 上色时逐个连通块调用。"""
+    bmp = potrace.Bitmap(~mask)
+    tr = bmp.trace(turdsize=turd, alphamax=1.0, opticurve=True, opttolerance=0.2)
+    return curv_d_offset(tr, ox, oy)
+
+
+def per_stroke(mask, rgb, turd, darken, min_px):
+    """每条线自己取参考图上的颜色：不再把整层压成几种色。"""
+    n, lab, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=8)
+    out = []
+    for i in range(1, n):
+        x, y, w, h, area = stats[i]
+        if area < min_px:
+            continue
+        sub = (lab[y:y + h, x:x + w] == i)
+        ys, xs = np.nonzero(sub)
+        col = np.median(rgb[y:y + h, x:x + w][ys, xs], axis=0)
+        col = np.clip(col * darken, 0, 255).astype(int)
+        fill = "#%02x%02x%02x" % tuple(int(v) for v in col)
+        for d in trace_parts(sub, turd, x, y):
+            out.append((fill, d))
+    return out
 
 
 def write_svg(path, W, H, ds, fill):
@@ -97,6 +124,11 @@ def main():
                     help=">1 时按参考图在线条上的颜色聚类，出彩色线稿")
     ap.add_argument("--darken", type=float, default=0.85, help="彩色线稿压暗系数，保住'线'的感觉")
     ap.add_argument("--poster-color", default="#111111")
+    ap.add_argument("--line-source", choices=["edges", "skeleton"], default="edges",
+                    help="edges=直接描边（线更完整）；skeleton=细化后再描（可调粗）")
+    ap.add_argument("--line-per-stroke", action="store_true",
+                    help="每条连通线单独取色（线数=颜色数）")
+    ap.add_argument("--min-stroke-px", type=int, default=25)
     a = ap.parse_args()
 
     img = cv2.imread(a.ref, cv2.IMREAD_GRAYSCALE)
@@ -127,7 +159,22 @@ def main():
             out = os.path.join(outdir, "%s.svg" % style)
 
         if style == "line":
-            skel = cv2.ximgproc.thinning((m.astype(np.uint8) * 255)) > 0
+            if a.line_source == "skeleton":
+                m = cv2.ximgproc.thinning((m.astype(np.uint8) * 255)) > 0
+            if a.line_per_stroke:
+                parts = per_stroke(m, rgb, a.turd, a.darken, a.min_stroke_px)
+                fills = sorted(set(f for f, _ in parts))
+                body = "".join('<path fill="%s" fill-rule="evenodd" d="%s"/>' % (f, d) for f, d in parts)
+                with open(out, "w", encoding="utf-8") as fh:
+                    fh.write('<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" '
+                             'viewBox="0 0 %d %d"><rect width="%d" height="%d" fill="#ffffff"/>%s</svg>'
+                             % (W, H, W, H, W, H, body))
+                report["layers"].append({"style": style, "method": method, "source": a.line_source,
+                                         "front_px": int(m.sum()), "paths": len(parts),
+                                         "colours": len(fills), "sample": fills[:6],
+                                         "kb": round(os.path.getsize(out) / 1024, 1), "svg": out})
+                continue
+            skel = m
             groups = []          # [(mask, fill), ...]
             if a.line_colors and a.line_colors > 1:
                 ys, xs = np.nonzero(skel)
