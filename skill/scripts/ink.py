@@ -23,6 +23,14 @@ import cv2
 import numpy as np
 import potrace
 
+
+def quantize_colours(rgb_pixels, k):
+    """把线条像素自己的颜色聚成 k 类：线不必是黑的，头发线、肤色线本来就不同。"""
+    z = rgb_pixels.astype(np.float32)
+    crit = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 20, 0.5)
+    _, labels, centers = cv2.kmeans(z, min(k, max(1, len(z))), None, crit, 3, cv2.KMEANS_PP_CENTERS)
+    return labels.ravel(), np.clip(centers.astype(int), 0, 255)
+
 PATH_DPI = 1.0
 
 
@@ -84,11 +92,18 @@ def main():
     ap.add_argument("--k", type=float, default=0.2)
     ap.add_argument("--lo", type=float, default=60)
     ap.add_argument("--hi", type=float, default=160)
+    ap.add_argument("--line-color", default="", help="统一线色，例如 #111111")
+    ap.add_argument("--line-colors", type=int, default=0,
+                    help=">1 时按参考图在线条上的颜色聚类，出彩色线稿")
+    ap.add_argument("--darken", type=float, default=0.85, help="彩色线稿压暗系数，保住'线'的感觉")
+    ap.add_argument("--poster-color", default="#111111")
     a = ap.parse_args()
 
     img = cv2.imread(a.ref, cv2.IMREAD_GRAYSCALE)
+    bgr = cv2.imread(a.ref)
     if img is None:
         raise SystemExit("cannot read %s" % a.ref)
+    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
     H, W = img.shape
 
     jobs = []
@@ -104,20 +119,48 @@ def main():
     report = {"ref": a.ref, "size": [W, H], "layers": []}
     for style, method in jobs:
         m = mask_for(img, method, a.block, a.k, a.lo, a.hi)
-        if style == "line":
-            m = cv2.ximgproc.thinning((m.astype(np.uint8) * 255))
-            m = m > 0
-            if a.dilate > 0:
-                k = np.ones((a.dilate * 2 + 1, a.dilate * 2 + 1), np.uint8)
-                m = cv2.dilate((m.astype(np.uint8) * 255), k) > 0
-        ds = trace_mask(m, a.turd)
         if a.style == "both":
             out = os.path.join(outdir, "%s.svg" % style)
         elif a.out:
             out = a.out
         else:
             out = os.path.join(outdir, "%s.svg" % style)
-        write_svg(out, W, H, ds, "#111111")
+
+        if style == "line":
+            skel = cv2.ximgproc.thinning((m.astype(np.uint8) * 255)) > 0
+            groups = []          # [(mask, fill), ...]
+            if a.line_colors and a.line_colors > 1:
+                ys, xs = np.nonzero(skel)
+                labels, centers = quantize_colours(rgb[ys, xs], a.line_colors)
+                for ci in range(len(centers)):
+                    g = np.zeros_like(skel)
+                    g[ys[labels == ci], xs[labels == ci]] = True
+                    if g.sum() < 30:
+                        continue
+                    col = np.clip(centers[ci] * a.darken, 0, 255).astype(int)
+                    groups.append((g, "#%02x%02x%02x" % tuple(col)))
+            else:
+                groups.append((skel, a.line_color or "#111111"))
+            fronts, ds_all, colours = 0, [], []
+            for g, fill in groups:
+                if a.dilate > 0:
+                    k = np.ones((a.dilate * 2 + 1, a.dilate * 2 + 1), np.uint8)
+                    g = cv2.dilate((g.astype(np.uint8) * 255), k) > 0
+                fronts += int(g.sum())
+                colours.append(fill)
+                ds_all.extend((fill, d) for d in trace_mask(g, a.turd))
+            body = "".join('<path fill="%s" fill-rule="evenodd" d="%s"/>' % (f, d) for f, d in ds_all)
+            with open(out, "w", encoding="utf-8") as fh:
+                fh.write('<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" '
+                         'viewBox="0 0 %d %d"><rect width="%d" height="%d" fill="#ffffff"/>%s</svg>'
+                         % (W, H, W, H, W, H, body))
+            report["layers"].append({"style": style, "method": method, "front_px": fronts,
+                                     "paths": len(ds_all), "colours": colours,
+                                     "kb": round(os.path.getsize(out) / 1024, 1), "svg": out})
+            continue
+
+        ds = trace_mask(m, a.turd)
+        write_svg(out, W, H, ds, a.poster_color)
         report["layers"].append({"style": style, "method": method,
                                  "front_px": int(m.sum()), "paths": len(ds),
                                  "kb": round(os.path.getsize(out) / 1024, 1),
