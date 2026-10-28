@@ -17,7 +17,9 @@ is a normal SVG (paths only) that iterate.py / attribute.py already understand.
 import argparse
 import json
 import os
+import subprocess
 import sys
+import tempfile
 
 import cv2
 import numpy as np
@@ -80,7 +82,43 @@ def trace_parts(mask, turd, ox=0, oy=0):
     return curv_d_offset(tr, ox, oy)
 
 
-def per_stroke(mask, rgb, gray, turd, darken, min_px, width_mode="flat", wmax=1):
+def poster_layers(rgb, k, sample=200000):
+    """彩色 poster：把整幅量化成 k 色，按面积从大到小返回 [(mask, fill)]，大的先画。"""
+    h, w, _ = rgb.shape
+    flat = rgb.reshape(-1, 3).astype(np.float32)
+    if len(flat) > sample:
+        idx = np.random.default_rng(0).choice(len(flat), sample, replace=False)
+        sub = flat[idx]
+    else:
+        sub = flat
+    crit = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 25, 0.5)
+    _, _, centers = cv2.kmeans(sub, k, None, crit, 3, cv2.KMEANS_PP_CENTERS)
+    centers = np.clip(centers, 0, 255)
+    # 全图分发到最近色（分块避免 N×像素 的内存峰值）
+    lab = np.empty(len(flat), np.int32)
+    best = np.full(len(flat), 1e18, np.float32)
+    for s in range(0, k, 8):
+        chunk = centers[s:s + 8]
+        d = ((flat[:, None, :] - chunk[None, :, :]) ** 2).sum(2)
+        j = d.argmin(1)
+        v = d[np.arange(len(flat)), j]
+        take = v < best
+        best[take] = v[take]
+        lab[take] = s + j[take]
+    lab = lab.reshape(h, w)
+    rows = []
+    for ci in range(len(centers)):
+        m = lab == ci
+        if m.sum() < 8:
+            continue
+        col = "#%02x%02x%02x" % tuple(int(v) for v in np.round(centers[ci]))
+        rows.append((int(m.sum()), m, col))
+    rows.sort(key=lambda r: -r[0])
+    return [(m, c) for _, m, c in rows]
+
+
+def per_stroke(mask, rgb, gray, turd, darken, min_px, width_mode="flat", wmax=1,
+               base_err=None, err_tol=8.0, clip=None):
     """每条线自己取色；width_mode=auto 时按该线处的梯度强度分配粗细。
 
     依据：对一条边，Sobel 梯度大 = 强轮廓（该画粗），梯度小 = 纹理/弱结构（该画细）。
@@ -94,6 +132,7 @@ def per_stroke(mask, rgb, gray, turd, darken, min_px, width_mode="flat", wmax=1)
     ref = float(np.percentile(mag[mask], 60)) if n_px else 1.0
     ref = max(ref, 1e-3)
     out, widths = [], []
+    dropped = [0, 0]     # [底图已足够, 被前景遮罩排除]
     H, W = mask.shape
     for i in range(1, n):
         x, y, w, h, area = stats[i]
@@ -104,6 +143,16 @@ def per_stroke(mask, rgb, gray, turd, darken, min_px, width_mode="flat", wmax=1)
         x1, y1 = min(W, x + w + pad), min(H, y + h + pad)
         sub = (lab[y0:y1, x0:x1] == i)
         ys, xs = np.nonzero(sub)
+        gys, gxs = ys + y0, xs + x0
+        # 遮挡/冗余判定：底图在这个位置已经还原得很好，且边缘很弱 => 这条线不该画
+        if base_err is not None:
+            e = float(base_err[gys, gxs].mean())
+            if e < err_tol:
+                dropped[0] += 1
+                continue
+        if clip is not None and not clip[gys, gxs].any():
+            dropped[1] += 1
+            continue
         col = np.median(rgb[y0:y1, x0:x1][ys, xs], axis=0)
         col = np.clip(col * darken, 0, 255).astype(int)
         fill = "#%02x%02x%02x" % tuple(int(v) for v in col)
@@ -133,6 +182,7 @@ def per_stroke(mask, rgb, gray, turd, darken, min_px, width_mode="flat", wmax=1)
         widths.append(width)
         for d in ds:
             out.append((fill, d))
+    per_stroke.dropped = tuple(dropped)
     return out, widths
 
 
@@ -178,6 +228,12 @@ def main():
                     help=">1 时按参考图在线条上的颜色聚类，出彩色线稿")
     ap.add_argument("--darken", type=float, default=0.85, help="彩色线稿压暗系数，保住'线'的感觉")
     ap.add_argument("--poster-color", default="#111111")
+    ap.add_argument("--poster-colors", type=int, default=1,
+                    help=">1 时输出彩色 poster（k 色调色板，按面积分层）")
+    ap.add_argument("--line-occlude", default="",
+                    help="给一张底图 SVG：底图已还原好的位置上的线会被丢掉（多余的纹理线）")
+    ap.add_argument("--line-occlude-tol", type=float, default=8.0)
+    ap.add_argument("--line-clip", default="", help="前景遮罩 PNG：线被这个形状裁掉（真遮挡）")
     ap.add_argument("--line-source", choices=["edges", "skeleton"], default="edges",
                     help="edges=直接描边（线更完整）；skeleton=细化后再描（可调粗）")
     ap.add_argument("--line-per-stroke", action="store_true",
@@ -206,6 +262,24 @@ def main():
     if a.style in ("line", "both"):
         jobs.append(("line", a.method_line or a.method or "canny"))
 
+    # 遮挡推断：底图误差 + 可选前景遮罩
+    base_err = None
+    clip_mask = None
+    if a.line_clip:
+        clip_mask = cv2.imread(a.line_clip, cv2.IMREAD_GRAYSCALE)
+        if clip_mask is None:
+            raise SystemExit("cannot read clip mask %s" % a.line_clip)
+        clip_mask = clip_mask > 127
+    if a.line_occlude:
+        tmp_png = os.path.join(tempfile.mkdtemp(prefix="ink-base-"), "base.png")
+        r = subprocess.run([sys.executable, os.path.join(os.path.dirname(os.path.abspath(__file__)), "render.py"),
+                            a.line_occlude, tmp_png, str(W), str(H)], capture_output=True, text=True)
+        if not os.path.exists(tmp_png):
+            raise SystemExit("cannot render --line-occlude base: %s" % (r.stderr or r.stdout).strip()[-160:])
+        bgr_base = cv2.imread(tmp_png)
+        base_rgb = cv2.cvtColor(bgr_base, cv2.COLOR_BGR2RGB).astype(np.int16)
+        base_err = np.abs(base_rgb - rgb.astype(np.int16)).max(axis=2)
+
     outdir = a.outdir or (os.path.dirname(os.path.abspath(a.out)) if a.out else ".")
     os.makedirs(outdir, exist_ok=True)
     report = {"ref": a.ref, "size": [W, H], "layers": []}
@@ -223,7 +297,8 @@ def main():
                 m = cv2.ximgproc.thinning((m.astype(np.uint8) * 255)) > 0
             if a.line_per_stroke:
                 parts, widths = per_stroke(m, rgb, img, a.turd, a.darken, a.min_stroke_px,
-                                          a.line_width, a.line_width_max)
+                                          a.line_width, a.line_width_max,
+                                          base_err=base_err, err_tol=a.line_occlude_tol, clip=clip_mask)
                 fills = sorted(set(f for f, _ in parts))
                 body = "".join('<path fill="%s" fill-rule="evenodd" d="%s"/>' % (f, d) for f, d in parts)
                 rect = "" if (a.no_bg or a.style == "both" or a.compose) else (
@@ -235,6 +310,8 @@ def main():
                                          "front_px": int(m.sum()), "paths": len(parts),
                                          "colours": len(fills), "bg": bool(rect), "sample": fills[:6],
                                          "widths": {w: widths.count(w) for w in sorted(set(widths))},
+                                         "dropped": {"base_already_ok": getattr(per_stroke, "dropped", (0, 0))[0],
+                                                     "outside_clip": getattr(per_stroke, "dropped", (0, 0))[1]},
                                          "kb": round(os.path.getsize(out) / 1024, 1), "svg": out})
                 continue
             skel = m
@@ -267,6 +344,23 @@ def main():
                          'viewBox="0 0 %d %d">%s%s</svg>' % (W, H, W, H, rect, body))
             report["layers"].append({"style": style, "method": method, "front_px": fronts,
                                      "paths": len(ds_all), "colours": colours, "bg": bool(rect),
+                                     "kb": round(os.path.getsize(out) / 1024, 1), "svg": out})
+            continue
+
+        if a.poster_colors and a.poster_colors > 1:
+            layers = poster_layers(rgb, a.poster_colors)
+            body, palette = [], []
+            for mask_i, colr in layers:
+                palette.append(colr)
+                body.extend((colr, d) for d in trace_mask(mask_i, a.turd))
+            rect = "" if (a.no_bg or a.style == "both" or a.compose) else (
+                '<rect width="%d" height="%d" fill="#ffffff"/>' % (W, H))
+            with open(out, "w", encoding="utf-8") as fh:
+                fh.write('<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 %d %d">%s%s</svg>'
+                         % (W, H, W, H, rect,
+                            "".join('<path fill="%s" fill-rule="evenodd" d="%s"/>' % (c, d) for c, d in body)))
+            report["layers"].append({"style": "poster", "method": "kmeans", "colours": len(palette),
+                                     "palette": palette, "paths": len(body),
                                      "kb": round(os.path.getsize(out) / 1024, 1), "svg": out})
             continue
 

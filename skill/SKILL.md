@@ -174,6 +174,14 @@ python <skill>/scripts/ink.py ref.png --style line --lo 110 --hi 240 --dilate 0 
 # 两层叠起来（poster 打底，line 压上）；不给 --out 时写 outdir/composed.svg，不覆盖单层
 python <skill>/scripts/ink.py ref.png --style both --outdir layers
 
+# 彩色 poster 层（k 色调色板，按面积分层）
+python <skill>/scripts/ink.py ref.png --style poster --poster-colors 8 --turd 8 --out pc8.svg
+
+# 遮挡/冗余裁剪：底图已经还原好的地方，线就不再画（可选再给前景遮罩）
+python <skill>/scripts/ink.py ref.png --style line --line-per-stroke \
+  --line-occlude base.svg --line-occlude-tol 10 --line-clip foreground.png \
+  --compose base.svg --out comic.svg
+
 # 彩色底 + 彩色线：先把彩色底生成出来，再把无背景的线层叠上去
 python <skill>/scripts/vectorize.py ref.png base.svg 16 4 1.0 1 0.3 2 0
 python <skill>/scripts/ink.py ref.png --style line --line-per-stroke --compose base.svg --out comic.svg
