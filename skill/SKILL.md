@@ -158,7 +158,18 @@ python <skill>/scripts/iterate.py - out.svg --base "2 6 1.0 0 0 1 0" --blank 420
  "next":"iterate.py ref.png out.svg --base \"48 6 1.0 1 0.4 2 0\" --patch <file>"}
 ```
 
-模型看 `worst_tiles` + 预览图 → 写补丁 → 再跑一次 → 又拿到新决策点。想回到脚本自己挑块（无模型），加 `--mode auto`。
+模型看 `worst_tiles` + 预览图 → 写补丁 → 再跑一次 → 又拿到新决策点。
+
+**从零作画也走同一个闭环**（没有参考图，改为写/改自己的 path）：
+
+```bash
+# 第一轮：空画布 + 全部图层
+iterate.py - yy1.svg --blank 420x600 --patch spec.json
+# 之后每轮：以上一轮的 svg 为底稿，只发改动
+iterate.py - yy2.svg --from-svg yy1.svg --patch fix.json
+```
+
+ask 在有参考和无参考两种情况下都会停住，输出 `preview_png`、路径数、颜色数，以及下一轮命令；`--base` 可省。想回到脚本自己挑块（无模型），加 `--mode auto`。
 
 自动档规则：按 `--grid`（默认 8）分块算渲染误差，每轮挑最差 `--top` 块，预算取 `global_K × k_mult^round`（默认 2×，上限 `--k-max`），收益低于 `--min-gain`（默认 0.05）就停。已覆盖的块不会重复补。最终只保留最好的一轮。
 

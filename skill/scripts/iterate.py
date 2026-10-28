@@ -146,7 +146,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("ref")
     ap.add_argument("out")
-    ap.add_argument("--base", required=True, help="vectorize positional args: K turd alphamax dil blur ss sk_thr")
+    ap.add_argument("--base", default="", help="vectorize positional args: K turd alphamax dil blur ss sk_thr（从零作画/续画时可省）")
     ap.add_argument("--rounds", type=int, default=3)
     ap.add_argument("--grid", type=int, default=8)
     ap.add_argument("--top", type=int, default=4, help="worst tiles patched per round")
@@ -155,15 +155,26 @@ def main():
     ap.add_argument("--min-gain", type=float, default=0.05)
     ap.add_argument("--patch", default="", help="JSON patch file with {'ops': [...]}")
     ap.add_argument("--blank", default="", help="WxH: start from an empty canvas (no reference, draw-only)")
+    ap.add_argument("--from-svg", default="",
+                    help="以一张已有 SVG 为底稿继续改（从零画的第二轮及以后用它）")
     ap.add_argument("--mode", choices=["ask", "auto"], default="ask",
                     help="ask=跑到决策点停下，把 JSON+预览交给模型（默认）；auto=脚本自己挑最差块加预算")
     ap.add_argument("--keep", default="")
     a = ap.parse_args()
 
+    if not a.base:
+        if not (a.blank or a.from_svg):
+            ap.error("--base 必填（除非 --blank / --from-svg）")
+        a.base = "2 6 1.0 0 0 1 0"
     base = a.base.split()
     global_k = int(base[0])
     if a.blank:
         W, H = [int(v) for v in a.blank.lower().split("x")]
+    elif a.from_svg:
+        with open(a.from_svg, "r", encoding="utf-8") as fh:
+            head = fh.read(600)
+        mv = re.search(r'width="(\d+)"\s+height="(\d+)"', head) or re.search(r'viewBox="0 0 (\d+) (\d+)"', head)
+        W, H = (int(mv.group(1)), int(mv.group(2))) if mv else (400, 600)
     else:
         W, H = Image.open(a.ref).size
     tmp = tempfile.mkdtemp(prefix="iterate-svg-")
@@ -227,10 +238,14 @@ def main():
     def build(tag):
         svg = os.path.join(tmp, tag + ".svg")
         png = os.path.join(tmp, tag + ".png")
-        if a.blank:
-            with open(svg, "w", encoding="utf-8") as fh:
-                fh.write('<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 %d %d">'
-                         '<rect width="%d" height="%d" fill="#ffffff"/></svg>' % (W, H, W, H, W, H))
+        if a.blank or a.from_svg:
+            if a.from_svg:
+                with open(a.from_svg, "r", encoding="utf-8") as src, open(svg, "w", encoding="utf-8") as fh:
+                    fh.write(src.read())
+            else:
+                with open(svg, "w", encoding="utf-8") as fh:
+                    fh.write('<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 %d %d">'
+                             '<rect width="%d" height="%d" fill="#ffffff"/></svg>' % (W, H, W, H, W, H))
             b = None
             if text_ops:
                 with open(svg, "r", encoding="utf-8") as fh:
@@ -274,9 +289,34 @@ def main():
     best = rounds[0]
     best_svg = svg
 
+    if a.mode == "ask" and (a.blank or a.from_svg):
+        # 从零作画/续画：没有参考图可算误差，但仍要在决策点停住给模型看
+        with open(svg, "r", encoding="utf-8") as fh:
+            txt = fh.read()
+        n_paths = txt.count("<path")
+        fills = re.findall(r'fill="(#[0-9a-fA-F]{6})"', txt)
+        os.makedirs(os.path.dirname(os.path.abspath(a.out)) or ".", exist_ok=True)
+        shutil.copyfile(svg, a.out)
+        preview = os.path.splitext(os.path.abspath(a.out))[0] + ".preview.png"
+        if os.path.exists(png):
+            shutil.copyfile(png, preview)
+        print(json.dumps({
+            "mode": "ask", "blank": bool(a.blank), "from_svg": a.from_svg or None,
+            "out": a.out, "paths": n_paths, "kb": round(os.path.getsize(svg) / 1024, 1),
+            "colours": len(set(fills)),
+            "preview_png": preview,
+            "patch_schema": {"ops": [
+                {"op": "redraw", "ids": [7], "d": "M ...", "fill": "#rrggbb"},
+                {"op": "drop", "ids": [12, 13]},
+                {"op": "draw", "fill": "#rrggbb", "d": "M ..."}]},
+            "next": "iterate.py - %s --from-svg %s --patch <file>" % (a.out, a.out),
+        }, ensure_ascii=False))
+        return
     if a.mode == "ask" and not a.blank:
         # 决策点：渲染 + 分块误差，停在这里等模型回补丁（这是本模式的默认行为）
         tiles = tile_errors(a.ref, png, a.grid)[:a.top]
+        os.makedirs(os.path.dirname(os.path.abspath(a.out)) or ".", exist_ok=True)
+        shutil.copyfile(best_svg, a.out)
         preview = os.path.splitext(os.path.abspath(a.out))[0] + ".preview.png"
         if os.path.exists(png):
             shutil.copyfile(png, preview)
@@ -291,8 +331,8 @@ def main():
                     % (a.ref, a.out, a.base, " --blank " + a.blank if a.blank else ""),
         }, ensure_ascii=False))
         return
-    if a.blank:
-        a.rounds = 0        # 空白画布没有参考可迭代，只有模型给的图层
+    if a.blank or a.from_svg:
+        a.rounds = 0        # 没有参考图可迭代，只有模型给的图层
     for it in range(1, a.rounds + 1):
         tiles = tile_errors(a.ref, rounds[-1]["png"], a.grid)
         if model_ops:
