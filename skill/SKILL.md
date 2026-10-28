@@ -65,6 +65,14 @@ python <skill>/scripts/auto.py ref.png out.svg
 
 单独跑某档：`auto.py ref.png out.svg --preset portrait --keep runs/`（`--keep` 保留所有候选文件，便于人工对比）。
 
+区域预算也能透传，同一套框会喂给每个候选（否则比较不公平）：
+
+```bash
+python <skill>/scripts/auto.py ref.png out.svg --region 150,200,330,430:384 --region-mask hand.png:256,3
+```
+
+`--region` / `--region-mask` 都可重复。实测 400×711 人像，illustration 预设：脸区 mean 8.17 → **4.98（-39%）**，体积 5.78MB → 6.94MB，背景不变（5.33）。输出 JSON 会多一个 `regions` 字段回显实际用的框。
+
 **报错或结果明显不对时**：先看 `candidates` 里每档的 `mean`，不是看 `picked`。某档 `mean` 异常高通常说明该预设不适合这类图（例如线稿跑 photo），换预设比调参更快。
 
 ## 区域预算：脸用高色数，背景用低色数

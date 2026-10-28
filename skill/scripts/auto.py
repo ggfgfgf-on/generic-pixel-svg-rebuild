@@ -4,6 +4,7 @@
   python scripts/auto.py ref.png out.svg            # best of the recommended presets
   python scripts/auto.py ref.png out.svg --try-all  # also try icon/lineart
   python scripts/auto.py ref.png out.svg --preset portrait
+  python scripts/auto.py ref.png out.svg --region 150,200,330,430:384   # 区域预算透传
 
 Every candidate is rendered and scored against the reference, so the caller does
 not have to guess K / ss / turd. The winner is copied to *out*; the report lists
@@ -58,6 +59,10 @@ def main():
                     help="repeatable; default = illustration,portrait,photo")
     ap.add_argument("--try-all", action="store_true")
     ap.add_argument("--keep", default="", help="directory to keep every candidate in")
+    ap.add_argument("--region", action="append", default=[],
+                    help="passthrough to vectorize.py: x0,y0,x1,y1:K[,SS]; repeatable")
+    ap.add_argument("--region-mask", action="append", default=[],
+                    help="passthrough to vectorize.py: FILE:K[,SS]; repeatable")
     a = ap.parse_args()
 
     names = a.preset or (list(PRESETS) if a.try_all else ORDER)
@@ -72,13 +77,21 @@ def main():
     except Exception:
         pass
 
+    # 区域预算与预设无关：同一套框/遮罩要喂给每个候选，否则比较不公平。
+    region_args = []
+    for r in a.region:
+        region_args += ["--region", r]
+    for m in a.region_mask:
+        region_args += ["--region-mask", m]
+
     tmp = tempfile.mkdtemp(prefix="auto-svg-")
     rows, best = [], None
     for name in names:
         pos, extra = PRESETS[name]
         svg = os.path.join(tmp, name + ".svg")
         png = os.path.join(tmp, name + ".png")
-        cmd = [PY, os.path.join(HERE, "vectorize.py"), a.ref, svg] + pos + list(extra)
+        cmd = ([PY, os.path.join(HERE, "vectorize.py"), a.ref, svg]
+               + pos + list(extra) + region_args)
         b = run(cmd)
         if not os.path.exists(svg):
             rows.append({"preset": name, "error": (b.stderr or b.stdout).strip()[-160:]})
@@ -127,9 +140,12 @@ def main():
                 shutil.copyfile(row["svg"], os.path.join(a.keep, os.path.basename(row["svg"])))
     for row in rows:
         row.pop("svg", None)
-    print(json.dumps({"out": a.out, "picked": best["preset"],
-                      "mean": best["mean"], "kb": best["kb"],
-                      "candidates": rows}, ensure_ascii=False))
+    report = {"out": a.out, "picked": best["preset"],
+              "mean": best["mean"], "kb": best["kb"],
+              "candidates": rows}
+    if region_args:
+        report["regions"] = {"boxes": a.region, "masks": a.region_mask}
+    print(json.dumps(report, ensure_ascii=False))
 
 
 if __name__ == "__main__":
