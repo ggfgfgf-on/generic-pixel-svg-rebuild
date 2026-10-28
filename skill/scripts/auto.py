@@ -61,6 +61,12 @@ def main():
     ap.add_argument("--keep", default="", help="directory to keep every candidate in")
     ap.add_argument("--region", action="append", default=[],
                     help="passthrough to vectorize.py: x0,y0,x1,y1:K[,SS]; repeatable")
+    ap.add_argument("--region-poly", action="append", default=[],
+                    help="irregular region \"x,y x,y ...:K[,SS]\" (repeatable)")
+    ap.add_argument("--tile", default="", help="full-canvas tiling CxR:K[,SS]")
+    ap.add_argument("--elements", default="", help="element budgets COLOURS:MINAREA:KMAX[,SS]")
+    ap.add_argument("--elements-refine", type=int, default=0, help="element residual refine rounds")
+    ap.add_argument("--palette-shared", type=int, default=0, help="shared palette colours for regions (0=off)")
     ap.add_argument("--region-mask", action="append", default=[],
                     help="passthrough to vectorize.py: FILE:K[,SS]; repeatable")
     a = ap.parse_args()
@@ -83,6 +89,16 @@ def main():
         region_args += ["--region", r]
     for m in a.region_mask:
         region_args += ["--region-mask", m]
+    for p in a.region_poly:
+        region_args += ["--region-poly", p]
+    if a.tile:
+        region_args += ["--tile", a.tile]
+    if a.elements:
+        region_args += ["--elements", a.elements]
+    if a.elements_refine:
+        region_args += ["--elements-refine", str(a.elements_refine)]
+    if a.palette_shared:
+        region_args += ["--palette-shared=%d" % a.palette_shared]
 
     tmp = tempfile.mkdtemp(prefix="auto-svg-")
     rows, best = [], None
@@ -144,7 +160,9 @@ def main():
               "mean": best["mean"], "kb": best["kb"],
               "candidates": rows}
     if region_args:
-        report["regions"] = {"boxes": a.region, "masks": a.region_mask}
+        report["regions"] = {"boxes": a.region, "masks": a.region_mask,
+                             "polys": a.region_poly, "tile": a.tile,
+                             "elements": a.elements, "refine": a.elements_refine}
     print(json.dumps(report, ensure_ascii=False))
 
 

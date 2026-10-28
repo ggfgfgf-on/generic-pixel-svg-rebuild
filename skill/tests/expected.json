@@ -15,7 +15,7 @@
     "unc_tol": 0
   },
   "alpha-vector-K64": {
-    "mean_max": 3.41,
+    "mean_max": 3.38,
     "uncovered": 0,
     "unc_tol": 8
   },
@@ -30,17 +30,37 @@
     "unc_tol": 0
   },
   "photo-process-final": {
-    "mean_max": 14.7,
+    "mean_max": 14.66,
     "uncovered": 0,
     "unc_tol": 0
   },
   "photo-process-final-detail": {
-    "mean_max": 14.66,
+    "mean_max": 14.65,
     "uncovered": 0,
     "unc_tol": 0
   },
   "photo-process-final-from-front": {
     "mean_max": 30.31,
+    "uncovered": 0,
+    "unc_tol": 0
+  },
+  "elements-budget": {
+    "mean_max": 5.25,
+    "uncovered": 0,
+    "unc_tol": 0
+  },
+  "elements-refine": {
+    "mean_max": 5.49,
+    "uncovered": 0,
+    "unc_tol": 0
+  },
+  "tile-budget": {
+    "mean_max": 5.81,
+    "uncovered": 0,
+    "unc_tol": 0
+  },
+  "poly-region": {
+    "mean_max": 13.34,
     "uncovered": 0,
     "unc_tol": 0
   },

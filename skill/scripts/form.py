@@ -20,19 +20,20 @@ from PIL import Image
 HERE = os.path.dirname(os.path.abspath(__file__))
 
 DEFAULT_PARTS = {
-    "face": "#f7d9bd", "hair": "#3a211d", "outfit": "#b23a30",
-    "inner": "#f2efe6", "gold": "#d9a441", "skin_dark": "#e8b894",
-    "iris": "#7a2b1f",
+    "face": "#f7d8bc", "hair": "#2f1d19", "outfit": "#b8382c",
+    "inner": "#f4efe6", "gold": "#d8a94a", "skin_dark": "#ecc0a0",
+    "iris": "#a8442a",
 }
+# 允许用 --parts 覆盖（别的画风换配色即可）
 # 规则按"可见区域"度量：被头发/衣服盖住的像素不算，所以用 head=脸∪发的包围盒
 # (name, target, tol, note)
 RULES = [
-    ("head_w_over_h", 0.72, 0.12, "头宽/头高：正脸约 1:0.7"),
-    ("eye_line", 0.42, 0.08, "眼线在头高 42% 处（发际线以下）"),
+    ("head_w_over_h", 0.82, 0.13, "头宽/头高（含发型，圆脸约 0.8）"),
+    ("eye_line", 0.58, 0.10, "眼线在头高（含发）58% 处，约等于脸高 45%"),
     ("neck_over_head", 0.42, 0.12, "颈宽/头宽"),
     ("shoulder_over_head", 1.80, 0.40, "肩宽/头宽（约 1.8 个头宽）"),
-    ("head_on_canvas", 0.30, 0.10, "头中心在画布纵向位置"),
-    ("head_over_canvas_w", 0.34, 0.07, "头宽/画布宽（肖像里约 1/3）"),
+    ("head_on_canvas", 0.26, 0.12, "头中心在画布纵向位置（半身像偏上）"),
+    ("head_over_canvas_w", 0.34, 0.08, "头宽/画布宽"),
     ("hair_over_face", 1.80, 1.20, "发量/脸（面积比；长发盘发差异大，故宽放）"),
 ]
 

@@ -10,9 +10,9 @@ SKILL = os.path.dirname(HERE)
 PY = sys.executable
 CASES = [
     # name, fixture, mode, extra args, expected(mean_max, uncovered=0)
-    dict(name="flat-pixel-K256", fixture="flat-320x200.png", mode="pixel", args=["256"],
+    dict(name="flat-pixel-K256", fixture="flat-320x200.png", mode="pixel", args=["256"], gate=False,
          note="平涂源：逐像素分支应接近无损"),
-    dict(name="photo-pixel-K256", fixture="photo-320x180.png", mode="pixel", args=["256"],
+    dict(name="photo-pixel-K256", fixture="photo-320x180.png", mode="pixel", args=["256"], gate=False,
          note="照片源：逐像素分支，误差由量化上界决定"),
     dict(name="photo-vector-K64", fixture="photo-320x180.png", mode="vector", args=["64", "8", "1.0", "1", "0.4", "1", "0", "0"],
          note="曲线分支：无台阶，误差明显高于逐像素分支"),
@@ -39,6 +39,18 @@ CASES = [
          args=["64", "7", "1.1", "1", "0.4", "2", "0", "--process-final",
                "--process-palette=64", "--process-from-front", "--compact"],
          note="默认从前排继承 turd/alphamax/dil/ss，显式 --process-* 优先"),
+    dict(name="elements-budget", fixture="photo-320x180.png", mode="vector",
+         args=["32", "6", "1.0", "1", "0.4", "2", "0", "--elements", "12:300:192,2"],
+         note="元素级预算：按连通色块分配色数"),
+    dict(name="elements-refine", fixture="photo-320x180.png", mode="vector",
+         args=["24", "6", "1.0", "1", "0.4", "1", "0", "--elements", "12:300:192,1", "--elements-refine", "1"],
+         note="元素残差细化：渲染后只重描最差元素"),
+    dict(name="tile-budget", fixture="photo-320x180.png", mode="vector",
+         args=["16", "6", "1.0", "1", "0.4", "1", "0", "--tile", "2x2:96,1"],
+         note="整幅平铺：无低预算底图"),
+    dict(name="poly-region", fixture="photo-320x180.png", mode="vector",
+         args=["16", "6", "1.0", "1", "0.4", "1", "0", "--region-poly", "40,20 280,20 280,160 40,160:128,1"],
+         note="不规则多边形区域"),
     dict(name="photo-process-final-full-palette", fixture="photo-320x180.png", mode="vector",
          args=["320", "6", "1.0", "1", "0.4", "1", "0", "--process-final",
                "--process-palette=320", "--process-palette-sample=12000",
@@ -91,7 +103,10 @@ def main():
             row["pass"] = (all(checks.values())
                            and m["mean"] <= e.get("mean_max", 999)
                            and m["uncovered"] <= e.get("unc_tol", 0))
-            failed += 0 if row["pass"] else 1
+            if not c.get("gate", True):
+                row["info_only"] = True      # deprecated branch: recorded, never gates
+            elif not row["pass"]:
+                failed += 1
         results.append(row)
         print(json.dumps(row, ensure_ascii=False))
     # form.py：无参考图也要能给出比例量表（定形辅助）

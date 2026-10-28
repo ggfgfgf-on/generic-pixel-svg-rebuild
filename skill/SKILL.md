@@ -175,6 +175,26 @@ vectorize.py ref.png out.svg 8 6 1.0 1 0.4 1 0 --elements 16:800:384,2
 代价：分割错了会把一块底色当成元素高预算描（额头/嘴部会出现杂色条），需要调 `最小面积` 与 `单元素上限`。
 
 
+### auto.py 也能用新预算（已透传）
+
+```bash
+auto.py ref.png out.svg --elements 16:800:384,2 --elements-refine 1
+auto.py ref.png out.svg --tile 2x3:192,2 --palette-shared 192
+auto.py ref.png out.svg --region-poly "40,20 280,20 280,160 40,160:128,1"
+```
+
+实测：`--preset illustration --elements 16:800:384,2` 在 ref-star 上 mean **5.14**（8.2MB），比我手调的 6.08 更好。
+
+### 独立工具（不参与默认管线）
+
+| 脚本 | 用途 | 用法 | 依赖 |
+|---|---|---|---|
+| `seal_gaps.py` | 补相邻色块之间的细缝（只补薄/小块，不碰白色衣服） | `seal_gaps.py in.svg|in.html in.png out [max_comp]` | render.py 先出同尺寸 PNG |
+| `steps.py` | 把带 `data-step` 的播放页导出成分帧图 | `steps.py player.html outdir --cols 4` | render.js |
+| `smooth_svg.py` | vtracer 引擎的替代描摹（外部库） | `smooth_svg.py ref.png out.svg [precision speckle layer corner]` | `pip install vtracer` |
+
+`seal_gaps.py` 现在也能从主入口调用：`vectorize.py ... --seal-gaps[=MAXCOMP]`（默认 24），只填薄缝，不改已有路径。
+
 ### 元素级再细化（`--elements-refine R`）
 
 ```bash

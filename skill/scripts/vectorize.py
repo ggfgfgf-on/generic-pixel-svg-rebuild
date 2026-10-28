@@ -442,6 +442,7 @@ def main():
     tile_spec = None      # --tile CxR:K[,SS]：整幅图平铺，不留低预算底图
     elements_spec = None  # --elements C:MIN:KMAX[,SS]：自动切元素，按元素给预算
     elements_refine = 0   # --elements-refine R：按元素残差再迭代 R 轮
+    seal_gaps_n = 0       # --seal-gaps[=N]：填充相邻色块之间的细缝（0=关）
     element_specs = None
     palette_shared = None # --palette-shared[=K]：所有区域共用一份调色板，消除接缝色差
     region_feather = -1   # --region-feather N：区域掩码外扩 N 像素（有区域时默认 2）
@@ -605,6 +606,10 @@ def main():
             box_s, _, k_s = nxt.partition(":")
             regions.append(_parse_region(box_s, k_s))
             i += 1
+        elif a.startswith("--seal-gaps="):
+            seal_gaps_n = int(a.split("=", 1)[1])
+        elif a == "--seal-gaps":
+            seal_gaps_n = 24
         elif a.startswith("--elements-refine="):
             elements_refine = int(a.split("=", 1)[1])
         elif a == "--elements-refine":
@@ -1167,6 +1172,22 @@ def main():
                             sample_n, ss, K, shared_centers, region_feather,
                             base_centers, region_snap, region_snap_tol, W, H)
             doc = open(out, encoding="utf-8").read()
+        if seal_gaps_n > 0:
+            # 细缝填充：只补"薄且小"的连通块，避免把白色衣服/眼白吃掉
+            try:
+                import seal_gaps as _sg
+                _tmp_png = os.path.join(os.path.dirname(os.path.abspath(out)) or ".", ".seal-gaps.tmp.png")
+                import subprocess as _sp
+                _sp.run([sys.executable, str(Path(__file__).resolve().parent / "render.py"),
+                         out, _tmp_png, str(W), str(H)], check=True, capture_output=True)
+                _new, _stats = _sg.seal(doc, _tmp_png, seal_gaps_n)
+                if _new and _new != doc:
+                    doc = _new
+                    with open(out, "w", encoding="utf-8") as _fh:
+                        _fh.write(doc)
+                print("[vectorize] seal-gaps: " + json.dumps(_stats, ensure_ascii=False), file=sys.stderr)
+            except Exception as _e:
+                print("[vectorize] seal-gaps skipped: %s" % _e, file=sys.stderr)
         if seal_flag:
             seal_output(out, ref, W, H)
         print(json.dumps({"out": out, "W": W, "H": H, "K": K, "layers": len(paths),
