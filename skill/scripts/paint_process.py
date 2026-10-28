@@ -21,6 +21,8 @@ import os
 import random
 import re
 import sys
+
+BG = [244, 238, 226]   # --bg: alpha flatten colour
 from pathlib import Path
 from xml.sax.saxutils import escape
 
@@ -135,7 +137,9 @@ def load_reference(path, size, max_pixels):
     im = Image.open(path)
     if im.mode in ("RGBA", "LA", "PA"):
         rgba = im.convert("RGBA")
-        bg = Image.new("RGBA", rgba.size, (244, 238, 226, 255))
+        bg = Image.new("RGBA", rgba.size, tuple(BG) + (255,))
+        print("[paint_process] warning: source has an alpha channel; flattened onto rgb%s "
+              "(transparent pixels get painted) - pass --bg to change it" % (tuple(BG),), file=sys.stderr)
         im = Image.alpha_composite(bg, rgba)
     im = im.convert("RGB")
     if size is not None:
@@ -935,7 +939,12 @@ def main():
     ap.add_argument("--turd", type=int, default=None, help="potrace turdsize inside components; default 1")
     ap.add_argument("--alphamax", type=float, default=None, help="potrace corner threshold; default 1.0")
     ap.add_argument("--ss", type=float, default=None, help="multiply all layer scales; default 1.0")
+    ap.add_argument("--bg", default="244,238,226", help="background RGB used to flatten alpha; default 244,238,226")
     args = ap.parse_args()
+    if args.bg:
+        BG[:] = [int(x) for x in args.bg.split(",")]
+        if len(BG) != 3:
+            raise SystemExit("--bg wants R,G,B")
     rng = random.Random(args.seed)
     img = load_reference(args.ref, parse_size(args.size), args.max_pixels)
     W, H = img.size

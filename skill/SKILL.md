@@ -185,6 +185,14 @@ auto.py ref.png out.svg --region-poly "40,20 280,20 280,160 40,160:128,1"
 
 实测：`--preset illustration --elements 16:800:384,2` 在 ref-star 上 mean **5.14**（8.2MB），比我手调的 6.08 更好。
 
+### 三个组合项的实测边界
+
+| 组合 | 实测 | 现在的行为 |
+|---|---|---|
+| `--elements` + `--palette-shared` | mean 4.25 → **9.20**（photo-320x180，K 从 523KB 降到 277KB） | 忽略 `--palette-shared` 并告警：一份全局调色板会让元素预算失效 |
+| `--tile CxR` 非整除 | 接缝列误差是内部的 **1.57×**（2x2 整除时 0.96，无接缝惩罚） | 告警并建议取 W/H 的因数；接缝靠默认 feather 2 兜住，不会露白（uncovered=0） |
+| `paint_process.py` 透明源 | 透明孔被涂成背景色（245,239,226，alpha=255），源 alpha=0 | 告警 + `--bg R,G,B` 指定铺底色；透明本身不保留 |
+
 ### 独立工具（不参与默认管线）
 
 | 脚本 | 用途 | 用法 | 依赖 |

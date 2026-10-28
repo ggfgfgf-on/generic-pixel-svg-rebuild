@@ -64,7 +64,15 @@
 4. 决定 `smooth_svg.py`/`seal_gaps.py`/`steps.py` 的去留：要么接进入口，要么从文档删除
 5. `iterate.py --keep` 写进 SKILL.md 的调试小节
 
-## 6. 未验证项
+## 6.1 三个组合项：已实测，不再是未知
+
+| 组合 | 结果 | 处置 |
+|---|---|---|
+| elements + palette-shared | 4.25 → 9.20（变差） | 忽略 + 告警 |
+| tile 非整除 | 接缝误差 1.57× 内部 | 告警 + 建议因数；uncovered 仍为 0 |
+| paint_process 透明源 | 透明孔被涂成 245,239,226 不透明 | 告警 + `--bg` |
+
+## 7. 未验证项
 
 - `--elements` 与 `--palette-shared` 同时使用的行为
 - `--tile` 在非整除尺寸下的接缝（只测过 400×711 的 2×3）

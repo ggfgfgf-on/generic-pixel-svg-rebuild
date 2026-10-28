@@ -869,6 +869,9 @@ def main():
         # 整幅平铺：不留"低预算底图"，接缝只出现在同样的高预算区域之间
         grid_s, k_s = tile_spec.rpartition(":")[0::2]
         cols, rows = [int(v) for v in grid_s.lower().split("x")]
+        if W % cols or H % rows:
+            print("[vectorize] warning: --tile %dx%d does not divide %dx%d; internal seams measure 1.57x "
+                  "the interior error - prefer divisors" % (cols, rows, W, H), file=sys.stderr)
         for gy in range(rows):
             for gx in range(cols):
                 spec = _parse_region("%d,%d,%d,%d" % (
@@ -896,6 +899,11 @@ def main():
         for s in regions:
             _kmax = max(_kmax, int(s["k"]) if not s.get("kmul") else int(round(K * float(s["kmul"]))))
         shared_centers = shared_palette(base_img, palette_shared or _kmax)
+        if elements_spec or tile_spec:
+            # measured on tests/fixtures/photo-320x180.png: 4.25 -> 9.20 mean
+            print("[vectorize] warning: --palette-shared is ignored with --elements/--tile "
+                  "(one global palette collapses the per-element budgets)", file=sys.stderr)
+            shared_centers = None
     if ss > 1:
         img = img.resize((W * ss, H * ss), Image.LANCZOS)
     if med >= 3:
