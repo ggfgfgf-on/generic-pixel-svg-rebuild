@@ -163,6 +163,44 @@ def _parse_region_mask(path_s, k_s):
     return {"box": None, "k": k_spec[0], "kmul": k_spec[1], "ss": k_spec[2], "mask": mask}
 
 
+def auto_elements(image, colours=16, min_area=600, kmax=384, ss=1):
+    """元素级预算：先把画面切成连通色块（元素），再按面积与内部复杂度给每块定色数。
+
+    边界落在真实色块轮廓上，所以不会出现矩形接缝。
+    """
+    from scipy import ndimage
+    from scipy.spatial import cKDTree
+    arr = np.asarray(image.convert("RGB"), dtype=np.float32)
+    H, W = arr.shape[:2]
+    px = arr.reshape(-1, 3)
+    boxes = median_cut(_palette_sample(px, 200000), int(colours))
+    cent = np.array([b.mean(0) for b in boxes], dtype=np.float32)
+    lab = np.empty(len(px), np.int32)
+    for i in range(0, len(px), 200000):
+        chunk = px[i:i + 200000]
+        lab[i:i + 200000] = cKDTree(cent).query(chunk, workers=-1)[1]
+    lab = lab.reshape(H, W)
+    specs = []
+    total = float(W * H)
+    for ci in range(len(cent)):
+        cc, n = ndimage.label(lab == ci)
+        if n == 0:
+            continue
+        sizes = ndimage.sum(np.ones_like(cc), cc, range(1, n + 1))
+        for k in range(1, n + 1):
+            if sizes[k - 1] < min_area:
+                continue
+            sel = cc == k
+            vals = arr[sel]
+            std = float(vals.std(0).max())
+            share = float(sizes[k - 1]) / total
+            ki = int(round(8 + kmax * min(1.0, (share ** 0.5) * (0.5 + std / 80.0))))
+            ki = max(8, min(kmax, ki))
+            mask = Image.fromarray((sel * 255).astype(np.uint8))
+            specs.append({"box": None, "k": ki, "kmul": None, "ss": ss, "mask": mask})
+    return specs
+
+
 def shared_palette(image, k):
     """整幅图一份调色板：区域之间不再各算各的，边界不会出现色差方块。"""
     arr = np.asarray(image.convert("RGB"), dtype=np.float32).reshape(-1, 3)
@@ -194,7 +232,7 @@ def _parse_region_poly(points_s, k_s, size=None):
 
 
 def trace_region(base_img, spec, turd, alphamax, sample_n=240000, step=999, ss_default=1, global_k=0,
-                 centers=None, feather=0):
+                 centers=None, feather=0, snap_to=None, snap_tol=10.0):
     """Trace one region at its own colour budget and (optional) own supersampling.
 
     spec = {"box": (x0, y0, x1, y1) or None, "k": K, "ss": ss or None,
@@ -238,6 +276,24 @@ def trace_region(base_img, spec, turd, alphamax, sample_n=240000, step=999, ss_d
         centers = np.asarray(centers, dtype=np.float32)
     if len(centers) == 0:
         return "", 0, 0
+    if snap_to is not None and len(snap_to):
+        # 接缝修复：区域色若底图本来就能表达，就换成底图那个色，边界不跳色
+        st = np.asarray(snap_to, dtype=np.float32)
+        d2 = ((centers[:, None, :] - st[None, :, :]) ** 2).sum(2)
+        near = d2.argmin(1)
+        dist = np.sqrt(d2[np.arange(len(centers)), near])
+        centers = centers.copy()
+        m = dist <= float(snap_tol)
+        centers[m] = st[near[m]]
+    if snap_to is not None and len(snap_to):
+        # 接缝修复：区域色若底图本来就能表达，就换成底图那个色，边界不跳色
+        st = np.asarray(snap_to, dtype=np.float32)
+        d2 = ((centers[:, None, :] - st[None, :, :]) ** 2).sum(2)
+        near = d2.argmin(1)
+        dist = np.sqrt(d2[np.arange(len(centers)), near])
+        centers = centers.copy()
+        m = dist <= float(snap_tol)
+        centers[m] = st[near[m]]
     lab = cKDTree(centers).query(carr, workers=-1)[1].astype(np.int32).reshape(ch * sr, cw * sr)
     if mask is not None:
         m = mask.crop((x0, y0, x1, y1))
@@ -341,8 +397,11 @@ def main():
     alpha_min_err = 0.0
     regions = []          # 局部重绘：给指定区域独立色数
     tile_spec = None      # --tile CxR:K[,SS]：整幅图平铺，不留低预算底图
+    elements_spec = None  # --elements C:MIN:KMAX[,SS]：自动切元素，按元素给预算
     palette_shared = None # --palette-shared[=K]：所有区域共用一份调色板，消除接缝色差
-    region_feather = 0    # --region-feather N：区域掩码外扩 N 像素，盖住边界
+    region_feather = -1   # --region-feather N：区域掩码外扩 N 像素（有区域时默认 2）
+    region_snap = True    # 区域颜色向底图调色板靠拢，消除矩形接缝
+    region_snap_tol = 10.0
     alpha_refine = 0
     alpha_tol = 1.0
     compact_flag = False
@@ -501,6 +560,13 @@ def main():
             box_s, _, k_s = nxt.partition(":")
             regions.append(_parse_region(box_s, k_s))
             i += 1
+        elif a.startswith("--elements="):
+            elements_spec = a.split("=", 1)[1]
+        elif a == "--elements":
+            if nxt is None:
+                raise SystemExit("--elements needs COLOURS:MINAREA:KMAX[,SS]")
+            elements_spec = nxt
+            i += 1
         elif a.startswith("--region-poly="):
             txt = a.split("=", 1)[1]
             pts_s, _, k_s = txt.rpartition(":")
@@ -522,6 +588,15 @@ def main():
             palette_shared = int(a.split("=", 1)[1])
         elif a == "--palette-shared":
             palette_shared = 0        # 0 = 取区域里最大的 K
+        elif a == "--no-region-snap":
+            region_snap = False
+        elif a.startswith("--region-snap-tol="):
+            region_snap_tol = float(a.split("=", 1)[1])
+        elif a == "--region-snap-tol":
+            if nxt is None:
+                raise SystemExit("--region-snap-tol needs a value")
+            region_snap_tol = float(nxt)
+            i += 1
         elif a.startswith("--region-feather="):
             region_feather = int(a.split("=", 1)[1])
         elif a == "--region-feather":
@@ -743,6 +818,20 @@ def main():
                     round(W * gx / cols), round(H * gy / rows),
                     round(W * (gx + 1) / cols), round(H * (gy + 1) / rows)), k_s)
                 regions.append(spec)
+    if elements_spec:
+        _es, _, _ss_s = elements_spec.rpartition(",")
+        if not _es:
+            _es = elements_spec; _ss_s = ""
+        _cols, _min, _kmax = [int(x) for x in _es.split(":")]
+        _ess = int(_ss_s) if _ss_s.strip().isdigit() else 1
+        _els = auto_elements(base_img, _cols, _min, _kmax, _ess)
+        print("[vectorize] elements=%d (colours=%d min=%d kmax=%d ss=%d)"
+              % (len(_els), _cols, _min, _kmax, _ess), file=sys.stderr)
+        regions.extend(_els)
+    if regions and region_feather < 0:
+        region_feather = 2
+    if region_feather < 0:
+        region_feather = 0
     shared_centers = None
     if palette_shared is not None and regions:
         _kmax = 0
@@ -803,6 +892,7 @@ def main():
     else:
         cent = make_centers(arr[usable], K)
         lab = nearest(arr, cent)
+    base_centers = np.asarray(cent, dtype=np.float32)
     print("[vectorize] palette assigned K=%d ss=%d pixels=%d" % (K, ss, len(lab)), flush=True)
     if subject is not None:
         lab[~subject] = -1                   # 透明像素不属于任何色类，不参与描摹
@@ -857,7 +947,9 @@ def main():
         # 人像的脸/手值得高色数高分辨率，背景不值得——这就是"区域预算"。
         grp, used_r, k_res = trace_region(base_img, spec, turd, alphamax, sample_n=sample_n, step=MAXSTEP,
                                           ss_default=ss, global_k=K,
-                                          centers=shared_centers, feather=region_feather)
+                                          centers=shared_centers, feather=region_feather,
+                                          snap_to=(base_centers if (region_snap and regions) else None),
+                                          snap_tol=region_snap_tol)
         if not grp:
             print("[vectorize] region %s produced nothing" % (spec.get("box"),), file=sys.stderr)
             continue

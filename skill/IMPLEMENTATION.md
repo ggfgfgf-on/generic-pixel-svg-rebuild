@@ -192,3 +192,8 @@ does not materially improve the metric, and it needs a native DLL. `--palette-sa
 tunes the sampled path instead.
 
 Requires Python 3 + numpy + Pillow + scipy (+ `potracer` for the curve branch). `vectorize.py` samples the palette (240k pixels) and assigns full-resolution pixels with `scipy.spatial.cKDTree`; this replaced the old O(N*K) Python chunk loop that made K=384/3x appear hung.
+
+
+**Element-level budgets.** `--elements COLOURS:MINAREA:KMAX[,SS]` quantizes the image to COLOURS classes, labels connected components of each class (scipy.ndimage.label), and turns every component larger than MINAREA into a region spec whose budget is `clamp(8, KMAX, 8 + KMAX * min(1, sqrt(share) * (0.5 + std/80)))` — big flat areas get little budget, large high-variance parts get a lot. Because every mask boundary is a real colour edge, mixed-budget seams do not appear as rectangles; measured 55 elements, mean 9.14, 2906.9KB on ref-star.png, against 11.09 for the rectangular staged trace and 6.87 for the full tiling. Mis-segmentation is the failure mode: a background fragment can be promoted to a high budget and get traced as streaks (seen over the forehead and mouth), so MINAREA/KMAX are the knobs.
+
+**Seam handling is on by default when regions exist.** Region colours within `--region-snap-tol` (10) of a base palette colour are snapped to it, and the region mask is dilated by `--region-feather` (2). Snapping removes tone steps where the coarse base can already express the colour; it does not remove the resolution difference, so a detailed region still shows a shape-density change at its edge. `--no-region-snap` and `--region-feather 0` disable the behaviour; `--tile` and `--palette-shared` remain available but are not applied unless asked.
