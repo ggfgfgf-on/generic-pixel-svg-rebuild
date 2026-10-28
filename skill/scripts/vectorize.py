@@ -181,11 +181,11 @@ def trace_region(base_img, spec, turd, alphamax, sample_n=240000, step=999, ss_d
         arr = np.asarray(mask, dtype=np.uint8) > 127
         ys, xs = np.nonzero(arr)
         if len(xs) == 0:
-            return "", 0
+            return "", 0, 0
         if box is None:
             box = (int(xs.min()), int(ys.min()), int(xs.max()) + 1, int(ys.max()) + 1)
     if box is None:
-        return "", 0
+        return "", 0, 0
     x0 = max(0, min(W - 1, int(box[0]))); y0 = max(0, min(H - 1, int(box[1])))
     x1 = max(x0 + 1, min(W, int(box[2]))); y1 = max(y0 + 1, min(H, int(box[3])))
     sr = int(spec.get("ss") or ss_default)
@@ -203,7 +203,7 @@ def trace_region(base_img, spec, turd, alphamax, sample_n=240000, step=999, ss_d
     boxes = median_cut(_palette_sample(carr, sample_n), k)
     centers = np.array([b.mean(0) for b in boxes], dtype=np.float32)
     if len(centers) == 0:
-        return "", 0
+        return "", 0, 0
     lab = cKDTree(centers).query(carr, workers=-1)[1].astype(np.int32).reshape(ch * sr, cw * sr)
     if mask is not None:
         m = mask.crop((x0, y0, x1, y1))
@@ -229,8 +229,8 @@ def trace_region(base_img, spec, turd, alphamax, sample_n=240000, step=999, ss_d
         out.append('<path fill="%s" fill-rule="evenodd" data-step="%d" d="%s"/>' % (col, step, d))
         used += n
     if not out:
-        return "", 0
-    return ('<g transform="translate(%d %d)">%s</g>' % (x0, y0, "".join(out))), used
+        return "", 0, k
+    return ('<g transform="translate(%d %d)">%s</g>' % (x0, y0, "".join(out))), used, k
 
 
 def _render_file(target, png, W, H, step=None):
@@ -601,14 +601,14 @@ def main():
             # 过程分支同样支持区域重绘：把区域层追加到过程画面之上（静态最终图）
             extra = []
             for spec in regions:
-                grp, used_r = trace_region(img, spec, 4, 1.0, sample_n=120000, step=99, ss_default=1,
-                                           global_k=K)
+                grp, used_r, k_res = trace_region(img, spec, 4, 1.0, sample_n=120000, step=99, ss_default=1,
+                                                  global_k=K)
                 if not grp:
                     print("[vectorize] region %s produced nothing" % (spec.get("box"),), file=sys.stderr)
                     continue
                 extra.append(grp)
-                print("[vectorize] process region box=%s K=%s ss=%s -> %d px"
-                      % (spec.get("box"), _k_label(spec), spec.get("ss"), used_r), file=sys.stderr)
+                print("[vectorize] process region box=%s K=%s(=%d) ss=%s -> %d px"
+                      % (spec.get("box"), _k_label(spec), k_res, spec.get("ss"), used_r), file=sys.stderr)
             if extra:
                 close = svg.rfind("</svg>")
                 if close > 0:
@@ -762,14 +762,14 @@ def main():
     for spec in regions:
         # 局部重绘：把指定区域用独立的色数（和可选的独立 ss）重描一遍，覆盖在全局层之上。
         # 人像的脸/手值得高色数高分辨率，背景不值得——这就是"区域预算"。
-        grp, used_r = trace_region(base_img, spec, turd, alphamax, sample_n=sample_n, step=MAXSTEP,
-                                   ss_default=ss, global_k=K)
+        grp, used_r, k_res = trace_region(base_img, spec, turd, alphamax, sample_n=sample_n, step=MAXSTEP,
+                                          ss_default=ss, global_k=K)
         if not grp:
             print("[vectorize] region %s produced nothing" % (spec.get("box"),), file=sys.stderr)
             continue
         paths.append(grp)
-        print("[vectorize] region box=%s K=%s ss=%s -> %d px"
-              % (spec.get("box"), _k_label(spec), spec.get("ss"), used_r), file=sys.stderr)
+        print("[vectorize] region box=%s K=%s(=%d) ss=%s -> %d px"
+              % (spec.get("box"), _k_label(spec), k_res, spec.get("ss"), used_r), file=sys.stderr)
 
     if alpha_soften > 0:
         # 几何式边界软化：在每个色带外侧补 alpha 递减的环，让相邻色带之间
