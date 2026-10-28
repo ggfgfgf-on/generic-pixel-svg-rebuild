@@ -17,6 +17,7 @@ global_K * k-mult, which is the cheap baseline the model can then refine.
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -154,6 +155,8 @@ def main():
     ap.add_argument("--min-gain", type=float, default=0.05)
     ap.add_argument("--patch", default="", help="JSON patch file with {'ops': [...]}")
     ap.add_argument("--blank", default="", help="WxH: start from an empty canvas (no reference, draw-only)")
+    ap.add_argument("--mode", choices=["ask", "auto"], default="ask",
+                    help="ask=跑到决策点停下，把 JSON+预览交给模型（默认）；auto=脚本自己挑最差块加预算")
     ap.add_argument("--keep", default="")
     a = ap.parse_args()
 
@@ -271,6 +274,23 @@ def main():
     best = rounds[0]
     best_svg = svg
 
+    if a.mode == "ask" and not a.blank:
+        # 决策点：渲染 + 分块误差，停在这里等模型回补丁（这是本模式的默认行为）
+        tiles = tile_errors(a.ref, png, a.grid)[:a.top]
+        preview = os.path.splitext(os.path.abspath(a.out))[0] + ".preview.png"
+        if os.path.exists(png):
+            shutil.copyfile(png, preview)
+        k_next = min(a.k_max, int(round(global_k * a.k_mult)))
+        print(json.dumps({
+            "mode": "ask", "out": a.out, "mean": m["mean"], "kb": rounds[-1]["kb"],
+            "applied_regions": len(regions),
+            "worst_tiles": [dict(t, suggest_k=k_next) for t in tiles],
+            "preview_png": preview,
+            "patch_schema": {"ops": [{"op": "region", "box": [100, 100, 200, 200], "k": 384, "ss": 2}]},
+            "next": "iterate.py %s %s --base \"%s\" --patch <file>%s"
+                    % (a.ref, a.out, a.base, " --blank " + a.blank if a.blank else ""),
+        }, ensure_ascii=False))
+        return
     if a.blank:
         a.rounds = 0        # 空白画布没有参考可迭代，只有模型给的图层
     for it in range(1, a.rounds + 1):
@@ -302,7 +322,6 @@ def main():
             break
 
     os.makedirs(os.path.dirname(os.path.abspath(a.out)) or ".", exist_ok=True)
-    import shutil
     shutil.copyfile(best_svg, a.out)
     if a.keep:
         os.makedirs(a.keep, exist_ok=True)

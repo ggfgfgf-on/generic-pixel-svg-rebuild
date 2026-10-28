@@ -148,6 +148,18 @@ python <skill>/scripts/iterate.py - out.svg --base "2 6 1.0 0 0 1 0" --blank 420
 
 实测 7 条 path / 0.8KB 出一张完整风景（天空、太阳、云、两层山、两只鸟）。**能画的是符号化的东西**：图标、logo、UI 元素、扁平插画、示意图；照片级和复杂人像仍然不行（token 带宽 + 没有先验）。
 
+**默认是 ask 模式**（模型在环）：跑完一版就停下，吐决策点，不自己往下改。
+
+```json
+{"mode":"ask","mean":8.2331,"kb":2520.7,
+ "worst_tiles":[{"box":[200,356,267,474],"mean":17.083,"suggest_k":96}],
+ "preview_png":"out.preview.png",
+ "patch_schema":{"ops":[{"op":"region","box":[100,100,200,200],"k":384,"ss":2}]},
+ "next":"iterate.py ref.png out.svg --base \"48 6 1.0 1 0.4 2 0\" --patch <file>"}
+```
+
+模型看 `worst_tiles` + 预览图 → 写补丁 → 再跑一次 → 又拿到新决策点。想回到脚本自己挑块（无模型），加 `--mode auto`。
+
 自动档规则：按 `--grid`（默认 8）分块算渲染误差，每轮挑最差 `--top` 块，预算取 `global_K × k_mult^round`（默认 2×，上限 `--k-max`），收益低于 `--min-gain`（默认 0.05）就停。已覆盖的块不会重复补。最终只保留最好的一轮。
 
 实测 400×711 人像（base K=48 ss=2）：
