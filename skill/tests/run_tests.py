@@ -4,6 +4,7 @@
   --record  记录当前指标为基线（写 tests/expected.json）
 """
 import os, sys, json, subprocess, tempfile
+from PIL import Image, ImageDraw
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SKILL = os.path.dirname(HERE)
@@ -48,6 +49,9 @@ CASES = [
     dict(name="tile-budget", fixture="photo-320x180.png", mode="vector",
          args=["16", "6", "1.0", "1", "0.4", "1", "0", "--tile", "2x2:96,1"],
          note="整幅平铺：无低预算底图"),
+    dict(name="tile-nondiv", fixture="photo-320x180.png", mode="vector",
+         args=["16", "6", "1.0", "1", "0.4", "1", "0", "--tile", "3x3:96,1"],
+         note="非整除平铺：靠 2px 重叠盖接缝"),
     dict(name="poly-region", fixture="photo-320x180.png", mode="vector",
          args=["16", "6", "1.0", "1", "0.4", "1", "0", "--region-poly", "40,20 280,20 280,160 40,160:128,1"],
          note="不规则多边形区域"),
@@ -109,6 +113,28 @@ def main():
                 failed += 1
         results.append(row)
         print(json.dumps(row, ensure_ascii=False))
+    # paint_process.py：透明源必须裁到 alpha，而不是被涂成背景色
+    import re as _re, subprocess as _sp, tempfile as _tf
+    _scripts = os.path.join(SKILL, "scripts")
+    _apng = os.path.join(_tf.gettempdir(), "alpha-proc.png")
+    _ahtml = os.path.join(_tf.gettempdir(), "alpha-proc.html")
+    _im = Image.new("RGBA", (100, 100), (0, 0, 0, 0))
+    ImageDraw.Draw(_im).rectangle([10, 10, 43, 43], fill=(200, 60, 40, 255))
+    _im.save(_apng)
+    _sp.run([sys.executable, os.path.join(_scripts, "paint_process.py"), _apng, _ahtml,
+             "--size", "100x100"], check=True, capture_output=True)
+    _doc = open(_ahtml, encoding="utf-8").read()
+    _m = _re.search(r'<clipPath[^>]*><path d="([^"]+)"', _doc)
+    _nums = [float(x) for x in _re.findall(r'-?\d+\.?\d*', _m.group(1))] if _m else []
+    _xs = [round(v, 1) for v in _nums[0::2]]
+    _ys = [round(v, 1) for v in _nums[1::2]]
+    _bbox = [min(_xs), min(_ys), max(_xs), max(_ys)] if _xs else []
+    _alpha_ok = (bool(_m) and bool(_re.search(r'clip-path="url\(#\w+\)"', _doc))
+                 and abs(_bbox[0] - 10) <= 2 and abs(_bbox[1] - 10) <= 2
+                 and abs(_bbox[2] - 44) <= 2 and abs(_bbox[3] - 44) <= 2) if _bbox else False
+    print(json.dumps({"case": "paint_process-alpha", "bbox": _bbox, "pass": _alpha_ok}))
+    if not _alpha_ok:
+        failed += 1
     # form.py：无参考图也要能给出比例量表（定形辅助）
     import subprocess as _sp
     import tempfile as _tf

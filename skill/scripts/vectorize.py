@@ -786,7 +786,7 @@ def main():
         palette_sample_n = process_palette_sample if process_palette_sample is not None else 80000
         if palette_sample_n < 0:
             raise SystemExit("--process-palette-sample must be >= 0")
-        img = paint_process.load_reference(ref, None, 2000000)
+        img, _alpha = paint_process.load_reference(ref, None, 2000000)
         W, H = img.size
         palette = paint_process.make_global_palette(img, process_palette,
                                                     full=process_full_palette,
@@ -869,9 +869,6 @@ def main():
         # 整幅平铺：不留"低预算底图"，接缝只出现在同样的高预算区域之间
         grid_s, k_s = tile_spec.rpartition(":")[0::2]
         cols, rows = [int(v) for v in grid_s.lower().split("x")]
-        if W % cols or H % rows:
-            print("[vectorize] warning: --tile %dx%d does not divide %dx%d; internal seams measure 1.57x "
-                  "the interior error - prefer divisors" % (cols, rows, W, H), file=sys.stderr)
         for gy in range(rows):
             for gx in range(cols):
                 spec = _parse_region("%d,%d,%d,%d" % (
@@ -893,17 +890,22 @@ def main():
         region_feather = 2
     if region_feather < 0:
         region_feather = 0
+    if regions and region_feather > 0:
+        # 矩形区域没有 mask，裁切框内的 dilation 会被边界夹住（--region-feather 曾经因此完全无效）。
+        # 把框本身扩进邻居，后画的区域才能盖住接缝；mask/多边形区域仍靠 dilation。
+        _pad = int(region_feather)
+        for s in regions:
+            b = s.get("box")
+            if b and s.get("mask") is None:
+                s["box"] = (max(0, b[0] - _pad), max(0, b[1] - _pad),
+                            min(W, b[2] + _pad), min(H, b[3] + _pad))
     shared_centers = None
     if palette_shared is not None and regions:
         _kmax = 0
         for s in regions:
             _kmax = max(_kmax, int(s["k"]) if not s.get("kmul") else int(round(K * float(s["kmul"]))))
         shared_centers = shared_palette(base_img, palette_shared or _kmax)
-        if elements_spec or tile_spec:
-            # measured on tests/fixtures/photo-320x180.png: 4.25 -> 9.20 mean
-            print("[vectorize] warning: --palette-shared is ignored with --elements/--tile "
-                  "(one global palette collapses the per-element budgets)", file=sys.stderr)
-            shared_centers = None
+
     if ss > 1:
         img = img.resize((W * ss, H * ss), Image.LANCZOS)
     if med >= 3:
@@ -1013,9 +1015,12 @@ def main():
         # 人像的脸/手值得高色数高分辨率，背景不值得——这就是"区域预算"。
         grp, used_r, k_res = trace_region(base_img, spec, turd, alphamax, sample_n=sample_n, step=MAXSTEP,
                                           ss_default=ss, global_k=K,
-                                          centers=shared_centers, feather=region_feather,
-                                          snap_to=(base_centers if (region_snap and regions) else None),
-                                          snap_tol=region_snap_tol)
+                                          centers=None,
+                                          feather=region_feather,
+                                          snap_to=(shared_centers if shared_centers is not None else
+                                                   (base_centers if (region_snap and regions) else None)),
+                                          snap_tol=(max(region_snap_tol, 16.0) if shared_centers is not None
+                                                    else region_snap_tol))
         if not grp:
             print("[vectorize] region %s produced nothing" % (spec.get("box"),), file=sys.stderr)
             continue

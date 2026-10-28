@@ -134,23 +134,36 @@ def normalize_layer_scales(layer_scales=None):
 
 
 def load_reference(path, size, max_pixels):
+    """Return (flattened RGB image, alpha mask or None).
+
+    Tracing runs on a flattened copy (potrace has no alpha), but the mask is kept so
+    the output SVG can clip every layer: transparent pixels stay transparent instead
+    of being painted with the background colour.
+    """
     im = Image.open(path)
+    alpha = None
     if im.mode in ("RGBA", "LA", "PA"):
         rgba = im.convert("RGBA")
+        alpha = rgba.getchannel("A")
         bg = Image.new("RGBA", rgba.size, tuple(BG) + (255,))
-        print("[paint_process] warning: source has an alpha channel; flattened onto rgb%s "
-              "(transparent pixels get painted) - pass --bg to change it" % (tuple(BG),), file=sys.stderr)
+        print("[paint_process] source has an alpha channel; tracing on rgb%s, output is clipped to the mask"
+              % (tuple(BG),), file=sys.stderr)
         im = Image.alpha_composite(bg, rgba)
     im = im.convert("RGB")
     if size is not None:
         im = im.resize(size, Image.LANCZOS)
+        if alpha is not None:
+            alpha = alpha.resize(size, Image.LANCZOS)
     elif im.width * im.height > max_pixels:
         s = math.sqrt(max_pixels / float(im.width * im.height))
-        im = im.resize((max(1, int(round(im.width * s))), max(1, int(round(im.height * s)))), Image.LANCZOS)
+        new = (max(1, int(round(im.width * s))), max(1, int(round(im.height * s))))
+        im = im.resize(new, Image.LANCZOS)
+        if alpha is not None:
+            alpha = alpha.resize(new, Image.LANCZOS)
     # Keep the palette from drifting toward the muted, averaged look of flat quantisation.
     im = ImageEnhance.Color(im).enhance(1.04)
     im = ImageEnhance.Contrast(im).enhance(1.015)
-    return im
+    return im, (np.asarray(alpha, dtype=np.uint8) if alpha is not None else None)
 
 
 def path_from_curve(curve, sx, sy, ox, oy, prec=1):
@@ -635,7 +648,7 @@ def assign_timeline(all_batches, duration, rng):
     return phases, max([p["end"] for p in phases] + [duration])
 
 
-def svg_from_batches(all_batches, W, H, underlay):
+def svg_from_batches(all_batches, W, H, underlay, clip_d=None):
     specs = [
         ("layer-sketch", ["line-sketch"]),
         ("layer-base", ["base"]),
@@ -667,6 +680,13 @@ def svg_from_batches(all_batches, W, H, underlay):
         layers.append('<g id="%s"%s>%s</g>' % (gid, style, "".join(inner)))
     if underlay and not any(gid == "layer-base" for gid in [l[0] for l in specs]):
         layers.insert(0, '<g id="layer-base">%s</g>' % underlay)
+    body = "".join(layers)
+    if clip_d:
+        # alpha 源：整幅画面裁到原始不透明区域之外，透明像素不再被涂成背景色
+        body = ('<defs><clipPath id="alphaclip" clipPathUnits="userSpaceOnUse">'
+                '<path d="%s"/></clipPath></defs><g clip-path="url(#alphaclip)">%s</g>'
+                % (clip_d, body))
+    return body
     return "".join(layers)
 
 def build_painterly_batches(img, palette, line_direction=None, options=None):
@@ -758,9 +778,9 @@ def build_final_static_svg(img, palette, line_direction=None, title="",
     return doc
 
 
-def build_html(img, batches, phases, total_time, title, out_path, preview_path, underlay):
+def build_html(img, batches, phases, total_time, title, out_path, preview_path, underlay, clip_d=None):
     W, H = img.size
-    body_svg = svg_from_batches(batches, W, H, underlay)
+    body_svg = svg_from_batches(batches, W, H, underlay, clip_d=clip_d)
     total = len(batches) + (1 if underlay else 0)
     phases_json = json.dumps([{"id": p["id"], "name": p["name"], "start": p["start"], "end": p["end"]} for p in phases], ensure_ascii=False)
     brush = '''<g id="brush" pointer-events="none" opacity="0">
@@ -946,7 +966,7 @@ def main():
         if len(BG) != 3:
             raise SystemExit("--bg wants R,G,B")
     rng = random.Random(args.seed)
-    img = load_reference(args.ref, parse_size(args.size), args.max_pixels)
+    img, alpha_mask = load_reference(args.ref, parse_size(args.size), args.max_pixels)
     W, H = img.size
     palette = make_global_palette(img, args.palette, full=args.palette_full,
                                   sample_n=args.palette_sample, max_colors=args.palette_max)
@@ -976,7 +996,12 @@ def main():
     phases, total_time = assign_timeline(all_batches, args.duration, rng)
     out = Path(args.out); out.parent.mkdir(parents=True, exist_ok=True)
     preview_path = out.with_suffix(".preview.html")
-    info = build_html(img, all_batches, phases, total_time, args.title, out, preview_path, underlay)
+    clip_d = None
+    if alpha_mask is not None:
+        _m = (alpha_mask >= 128).astype(np.uint8)
+        clip_d = trace_mask(_m, 1.0, 1.0, 0, 0, turd=2, alphamax=1.0, prec=1)
+        print("[paint_process] alpha clip: %d path chars" % len(clip_d or ""), file=sys.stderr)
+    info = build_html(img, all_batches, phases, total_time, args.title, out, preview_path, underlay, clip_d=clip_d)
     info["out"] = str(out)
     info["palette"] = args.palette
     info["palette_full"] = bool(palette.get("full")) if palette else False
