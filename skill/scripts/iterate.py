@@ -169,7 +169,8 @@ def main():
     ap.add_argument("--k-mult", type=float, default=2.0, help="auto patch: region K = global K * mult^round")
     ap.add_argument("--k-max", type=int, default=1024)
     ap.add_argument("--min-gain", type=float, default=0.05)
-    ap.add_argument("--patch", default="", help="JSON patch file with {'ops': [...]}")
+    ap.add_argument("--patch", default=[], action="append",
+                    help="JSON patch file with {'ops': [...]}；可重复给多个，按顺序叠加（每轮请带上全部历史补丁）")
     ap.add_argument("--blank", default="", help="WxH: start from an empty canvas (no reference, draw-only)")
     ap.add_argument("--from-svg", default="",
                     help="以一张已有 SVG 为底稿继续改（从零画的第二轮及以后用它）")
@@ -198,9 +199,11 @@ def main():
 
     model_ops = []
     text_ops = []          # remap / draw：只改文本，不重跑描摹
-    if a.patch:
-        with open(a.patch, "r", encoding="utf-8") as fh:
-            model_ops = json.load(fh).get("ops", [])
+    model_ops = []
+    for _pf in (a.patch or []):
+        with open(_pf, "r", encoding="utf-8") as fh:
+            model_ops.extend(json.load(fh).get("ops", []))
+    if model_ops:
         idx = {"K": 0, "turd": 1, "alphamax": 2, "dil": 3, "blur": 4, "ss": 5, "sk_thr": 6}
         for op in model_ops:
             kind = op.get("op")
@@ -242,8 +245,13 @@ def main():
                     return ('fill="%s"' % dst) if np.abs(rgb - src).max() <= tol else m.group(0)
                 text = re.sub(r'fill="(#[0-9a-fA-F]{6})"', swap, text)
             elif op.get("op") == "draw":
-                extra = ('<path fill="%s" fill-rule="evenodd" data-step="99" d="%s"/>'
-                         % (op.get("fill", "#000000"), op["d"]))
+                attrs = 'fill="%s"' % op.get("fill", "#000000")
+                if op.get("stroke"):
+                    attrs += ' stroke="%s" stroke-width="%s" stroke-linejoin="round" stroke-linecap="round"' % (
+                        op["stroke"], op.get("stroke_width", 1.4))
+                if op.get("opacity") is not None:
+                    attrs += ' opacity="%s"' % op["opacity"]
+                extra = '<path %s data-step="99" d="%s"/>' % (attrs, op["d"])
                 close = text.rfind("</svg>")
                 if close > 0:
                     text = text[:close] + extra + text[close:]
@@ -340,6 +348,7 @@ def main():
         print(json.dumps({
             "mode": "ask", "out": a.out, "mean": m["mean"], "kb": rounds[-1]["kb"],
             "applied_regions": len(regions),
+            "applied_ops": model_ops,
             "worst_tiles": [dict(t, suggest_k=k_next) for t in tiles],
             "preview_png": preview,
             "patch_schema": {"ops": [{"op": "region", "box": [100, 100, 200, 200], "k": 384, "ss": 2}]},
