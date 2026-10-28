@@ -163,6 +163,49 @@ def _parse_region_mask(path_s, k_s):
     return {"box": None, "k": k_spec[0], "kmul": k_spec[1], "ss": k_spec[2], "mask": mask}
 
 
+def refine_elements(out, base_img, specs, rounds, turd, alphamax, sample_n, ss, K,
+                    shared_centers, feather, base_centers, snap, snap_tol, W, H):
+    """元素级迭代：渲染 -> 量每个元素的残差 -> 只给最差的那批加预算重描。
+
+    只重描真正没画好的元素，所以每轮成本远低于整体重跑。
+    """
+    import subprocess
+    ref_arr = np.asarray(base_img.convert("RGB"), dtype=np.float32)
+    tmp_png = out + ".refine.png"
+    for r in range(rounds):
+        subprocess.run([sys.executable, str(Path(__file__).resolve().parent / "render.py"),
+                        out, tmp_png, str(W), str(H)], check=True, capture_output=True)
+        cur = np.asarray(Image.open(tmp_png).convert("RGB"), dtype=np.float32)
+        errs = []
+        for spec in specs:
+            m = np.asarray(spec["mask"], dtype=np.uint8) > 127
+            errs.append(float(np.abs(cur[m] - ref_arr[m]).mean()) if m.sum() >= 64 else 0.0)
+        order = list(np.argsort(np.asarray(errs))[::-1])
+        worst = order[:max(1, len(order) // 4)]
+        doc = Path(out).read_text(encoding="utf-8")
+        add, changed = [], 0
+        for idx in worst:
+            if errs[idx] < 6.0:
+                continue
+            spec2 = dict(specs[idx])
+            spec2["k"] = int(min(4096, max(16, spec["k"] * 2)))
+            spec2["ss"] = int(min(3, int(specs[idx].get("ss") or ss) + 1))
+            grp, used, kres = trace_region(base_img, spec2, turd, alphamax, sample_n=sample_n,
+                                           step=11, ss_default=ss, global_k=K,
+                                           centers=shared_centers, feather=feather,
+                                           snap_to=(base_centers if snap else None), snap_tol=snap_tol)
+            if grp:
+                add.append(grp)
+                specs[idx] = spec2
+                changed += 1
+        if not changed:
+            break
+        close = doc.rfind("</svg>")
+        Path(out).write_text(doc[:close] + "".join(add) + doc[close:], encoding="utf-8")
+        print("[vectorize] element refine round %d: %d/%d elements re-traced (worst err %.1f)"
+              % (r + 1, changed, len(specs), errs[order[0]]), file=sys.stderr)
+
+
 def auto_elements(image, colours=16, min_area=600, kmax=384, ss=1):
     """元素级预算：先把画面切成连通色块（元素），再按面积与内部复杂度给每块定色数。
 
@@ -398,6 +441,8 @@ def main():
     regions = []          # 局部重绘：给指定区域独立色数
     tile_spec = None      # --tile CxR:K[,SS]：整幅图平铺，不留低预算底图
     elements_spec = None  # --elements C:MIN:KMAX[,SS]：自动切元素，按元素给预算
+    elements_refine = 0   # --elements-refine R：按元素残差再迭代 R 轮
+    element_specs = None
     palette_shared = None # --palette-shared[=K]：所有区域共用一份调色板，消除接缝色差
     region_feather = -1   # --region-feather N：区域掩码外扩 N 像素（有区域时默认 2）
     region_snap = True    # 区域颜色向底图调色板靠拢，消除矩形接缝
@@ -559,6 +604,13 @@ def main():
                 raise SystemExit("--region needs x0,y0,x1,y1:K[,SS]")
             box_s, _, k_s = nxt.partition(":")
             regions.append(_parse_region(box_s, k_s))
+            i += 1
+        elif a.startswith("--elements-refine="):
+            elements_refine = int(a.split("=", 1)[1])
+        elif a == "--elements-refine":
+            if nxt is None:
+                raise SystemExit("--elements-refine needs a round count")
+            elements_refine = int(nxt)
             i += 1
         elif a.startswith("--elements="):
             elements_spec = a.split("=", 1)[1]
@@ -828,6 +880,7 @@ def main():
         print("[vectorize] elements=%d (colours=%d min=%d kmax=%d ss=%d)"
               % (len(_els), _cols, _min, _kmax, _ess), file=sys.stderr)
         regions.extend(_els)
+        element_specs = _els
     if regions and region_feather < 0:
         region_feather = 2
     if region_feather < 0:
@@ -1109,6 +1162,11 @@ def main():
         doc = '<?xml version="1.0" encoding="UTF-8"?>\n' + clean + '\n'
         with open(out, "w", encoding="utf-8") as fh:
             fh.write(doc)
+        if elements_refine > 0 and element_specs and not compact_flag and edge_soften == 0 and alpha_soften == 0:
+            refine_elements(out, base_img, element_specs, elements_refine, turd, alphamax,
+                            sample_n, ss, K, shared_centers, region_feather,
+                            base_centers, region_snap, region_snap_tol, W, H)
+            doc = open(out, encoding="utf-8").read()
         if seal_flag:
             seal_output(out, ref, W, H)
         print(json.dumps({"out": out, "W": W, "H": H, "K": K, "layers": len(paths),
