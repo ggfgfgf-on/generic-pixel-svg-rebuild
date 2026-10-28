@@ -80,22 +80,60 @@ def trace_parts(mask, turd, ox=0, oy=0):
     return curv_d_offset(tr, ox, oy)
 
 
-def per_stroke(mask, rgb, turd, darken, min_px):
-    """每条线自己取参考图上的颜色：不再把整层压成几种色。"""
+def per_stroke(mask, rgb, gray, turd, darken, min_px, width_mode="flat", wmax=1):
+    """每条线自己取色；width_mode=auto 时按该线处的梯度强度分配粗细。
+
+    依据：对一条边，Sobel 梯度大 = 强轮廓（该画粗），梯度小 = 纹理/弱结构（该画细）。
+    强度先按全图线条像素的 90 分位归一，再映射成 1,3,5... px。
+    """
+    gx = cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)
+    gy = cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3)
+    mag = np.hypot(gx, gy)
     n, lab, stats, _ = cv2.connectedComponentsWithStats(mask.astype(np.uint8), connectivity=8)
-    out = []
+    n_px = max(1, int(mask.sum()))
+    ref = float(np.percentile(mag[mask], 60)) if n_px else 1.0
+    ref = max(ref, 1e-3)
+    out, widths = [], []
+    H, W = mask.shape
     for i in range(1, n):
         x, y, w, h, area = stats[i]
         if area < min_px:
             continue
-        sub = (lab[y:y + h, x:x + w] == i)
+        pad = wmax if width_mode == "auto" else 0
+        x0, y0 = max(0, x - pad), max(0, y - pad)
+        x1, y1 = min(W, x + w + pad), min(H, y + h + pad)
+        sub = (lab[y0:y1, x0:x1] == i)
         ys, xs = np.nonzero(sub)
-        col = np.median(rgb[y:y + h, x:x + w][ys, xs], axis=0)
+        col = np.median(rgb[y0:y1, x0:x1][ys, xs], axis=0)
         col = np.clip(col * darken, 0, 255).astype(int)
         fill = "#%02x%02x%02x" % tuple(int(v) for v in col)
-        for d in trace_parts(sub, turd, x, y):
+        width = 1
+        # 只有"长"的笔画才配加粗：眼睛/鼻孔这类小闭环加粗会糊成块
+        if width_mode == "auto" and area >= 150 and max(w, h) >= 40:
+            strength = float(mag[y0:y1, x0:x1][ys, xs].mean()) / ref
+            s = float(np.clip((strength - 0.45) / 0.55, 0.0, 1.0)) ** 1.5
+            width = 1 + 2 * int(round(s * wmax))
+
+        # 细线永远先描：加粗会把小闭环（眼睛、鼻孔）的内孔填死，
+        # 遇到这种情况就保留细线，宁可这一段不加粗。
+        lab_crop = lab[y:y + h, x:x + w]
+        thin_crop = (lab_crop == i)
+        ds = trace_parts(thin_crop, turd, x, y)
+        if width > 1:
+            k = np.ones((width, width), np.uint8)
+            wide_crop = cv2.dilate((thin_crop.astype(np.uint8) * 255), k) > 0
+            others = (lab_crop > 0) & (lab_crop != i)
+            # 加粗后如果吃到了别的线（密集区），就保持细线：否则相邻线会糊成一片
+            collides = bool((wide_crop & others).any())
+            ds_wide = trace_parts(wide_crop, turd, x, y)
+            if not collides and len(ds_wide) >= len(ds):
+                ds = ds_wide
+            else:
+                width = 1
+        widths.append(width)
+        for d in ds:
             out.append((fill, d))
-    return out
+    return out, widths
 
 
 def write_svg(path, W, H, ds, fill, bg=True):
@@ -149,6 +187,10 @@ def main():
     ap.add_argument("--compose", default="", help="把线层叠到这张已有 SVG 上（彩色底 + 线）")
     ap.add_argument("--method-poster", default="", help="海报层单独指定方法")
     ap.add_argument("--method-line", default="", help="线稿层单独指定方法")
+    ap.add_argument("--line-width", choices=["flat", "auto"], default="flat",
+                    help="auto=按梯度强度给每段线分粗细（强轮廓粗、纹理细）")
+    ap.add_argument("--line-width-max", type=int, default=1,
+                    help="auto 时最大加粗级数：1 => 1/3px，2 => 1/3/5px")
     a = ap.parse_args()
 
     img = cv2.imread(a.ref, cv2.IMREAD_GRAYSCALE)
@@ -180,7 +222,8 @@ def main():
             if a.line_source == "skeleton":
                 m = cv2.ximgproc.thinning((m.astype(np.uint8) * 255)) > 0
             if a.line_per_stroke:
-                parts = per_stroke(m, rgb, a.turd, a.darken, a.min_stroke_px)
+                parts, widths = per_stroke(m, rgb, img, a.turd, a.darken, a.min_stroke_px,
+                                          a.line_width, a.line_width_max)
                 fills = sorted(set(f for f, _ in parts))
                 body = "".join('<path fill="%s" fill-rule="evenodd" d="%s"/>' % (f, d) for f, d in parts)
                 rect = "" if (a.no_bg or a.style == "both" or a.compose) else (
@@ -191,6 +234,7 @@ def main():
                 report["layers"].append({"style": style, "method": method, "source": a.line_source,
                                          "front_px": int(m.sum()), "paths": len(parts),
                                          "colours": len(fills), "bg": bool(rect), "sample": fills[:6],
+                                         "widths": {w: widths.count(w) for w in sorted(set(widths))},
                                          "kb": round(os.path.getsize(out) / 1024, 1), "svg": out})
                 continue
             skel = m
