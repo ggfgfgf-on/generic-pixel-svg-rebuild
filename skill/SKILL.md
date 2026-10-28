@@ -160,6 +160,32 @@ python <skill>/scripts/iterate.py - out.svg --base "2 6 1.0 0 0 1 0" --blank 420
 
 模型补丁档（两个框：脸 384/ss2 + 上身 192）：8.23 → **6.91**，3.9MB，一轮完成。
 
+## 前置分层：ink.py（线稿 / 黑白海报）
+
+不是 vectorize 的开关，而是**给模型调用的辅助件**：一次只出一种层，打印 JSON（前景像素 / 路径数 / 体积），模型比完数字再决定要不要叠。
+
+```bash
+# 黑白海报层：实心块直出，最省
+python <skill>/scripts/ink.py ref.png --style poster --method sauvola --out poster.svg
+
+# 线稿层：边缘 → 细化 → 描边；dilate=0 是发丝线
+python <skill>/scripts/ink.py ref.png --style line --lo 110 --hi 240 --dilate 0 --out line.svg
+
+# 两层叠起来（poster 打底，line 压上）
+python <skill>/scripts/ink.py ref.png --style both --out comic.svg --outdir layers
+```
+
+实测 400×711 人像：
+
+| 调用 | 前景 px | 路径 | 体积 | 观感 |
+|---|---|---|---|---|
+| poster（sauvola） | 47,851 | 147 | 82.2KB | 黑白海报/木刻，实心块 |
+| line（canny 60/160, dilate 1） | 41,908 | 121 | 70.8KB | **偏重**：暗部纹理糊成块 |
+| line（canny 110/240, dilate 0） | 9,427 | 168 | 73.2KB | **真线稿**，发丝细线 |
+| both 合成 | — | 268 | 153.0KB | 漫画感 |
+
+**参数坑**：柔光照片默认阈值（60/160）会把头发纹理全当边，细化后再膨胀就是一片黑。线稿必须先 `--dilate 0` 看骨架，再按需加粗；阈值下限抬到 110 以上才干净。
+
 ## 归因：attribute.py（别让模型猜 id）
 
 ```bash
