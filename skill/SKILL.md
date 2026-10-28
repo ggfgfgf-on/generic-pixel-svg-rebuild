@@ -160,6 +160,28 @@ python <skill>/scripts/iterate.py - out.svg --base "2 6 1.0 0 0 1 0" --blank 420
 
 模型补丁档（两个框：脸 384/ss2 + 上身 192）：8.23 → **6.91**，3.9MB，一轮完成。
 
+## 归因：attribute.py（别让模型猜 id）
+
+```bash
+python <skill>/scripts/attribute.py ref.png out.svg --top 8
+```
+
+做法：把整幅图**再渲染一次**，每条 `<path>` 换成唯一索引色 → 得到"这个像素归谁"的地图；再用真实渲染与参考图算误差，**只把像素记在它真正可见的那条路径上**。一次渲染出全表。
+
+每行给：`id` / `fill` / `px` / `mean` / `sum` / `share` / `inner` / `ring` / `guess` / `gain` / `suggest_fill` / `box`。
+
+| 字段 | 含义 |
+|---|---|
+| `guess=shape` | 最优填充色与现值差很远，或轮廓误差 > 内部误差 → **位置/形状错** |
+| `guess=colour` | 轮廓正常、内部整体偏色 → **换色即可** |
+| `gain` | 换成 `suggest_fill` 能回收多少误差总和（按它排序） |
+
+**受控验证**：把画好的场景里太阳 path 挪到别处再跑归因——$id=2$ 排第一，mean 126.26，`guess=shape`，`suggest_fill` 直接给出“这块底下其实是背景色”的证据。
+
+**真实人像上的发现**：48 色量化后，最差的 path 是**颜色类**（bbox 横跨整幅），误差集中在轮廓（`ring > inner`）——所以换色几乎没用（mean 8.23 → 8.13），该加的是预算（`--region`），不是手术。**路径手术只对手绘/线稿类有意义**，对量化照片没有“一条线”可修。
+
+闭环用法：`attribute.py` 看排名 → 组补丁 → `iterate.py --patch` → 复测（mean 与 `total_err_sum` 都看）。
+
 ## 脚本（A→G 全链路已固化）
 
 **默认用 `vectorize.py` 做 SVG 重绘；`build_svg.py` 的像素矩形模式已弃用**，只保留作逐像素误差参考，不再作为默认或交付。`paint_process.py` 是显式可选分支，用户没有点名“作画过程 / 回放”时不要调用；但 `vectorize.py --process-final` 可复用它的**最终画面算法**（默认关闭，无回放）。
