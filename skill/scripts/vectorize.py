@@ -163,7 +163,38 @@ def _parse_region_mask(path_s, k_s):
     return {"box": None, "k": k_spec[0], "kmul": k_spec[1], "ss": k_spec[2], "mask": mask}
 
 
-def trace_region(base_img, spec, turd, alphamax, sample_n=240000, step=999, ss_default=1, global_k=0):
+def shared_palette(image, k):
+    """整幅图一份调色板：区域之间不再各算各的，边界不会出现色差方块。"""
+    arr = np.asarray(image.convert("RGB"), dtype=np.float32).reshape(-1, 3)
+    boxes = median_cut(_palette_sample(arr, 240000), int(k))
+    return np.array([b.mean(0) for b in boxes], dtype=np.float32)
+
+
+def _region_poly_mask(points, size):
+    """不规则区域：多边形 -> 全分辨率 L 掩码。"""
+    from PIL import Image as _Image
+    from PIL import ImageDraw as _Draw
+    m = _Image.new("L", size, 0)
+    _Draw.Draw(m).polygon(points, fill=255)
+    return m
+
+
+def _parse_region_poly(points_s, k_s, size=None):
+    pts = []
+    for pair in points_s.replace(";", " ").split():
+        x, y = pair.split(",")
+        pts.append((float(x), float(y)))
+    if len(pts) < 3:
+        raise SystemExit("--region-poly needs at least 3 'x,y' points")
+    k_spec = _parse_k(k_s, "--region-poly")
+    xs = [p[0] for p in pts]; ys = [p[1] for p in pts]
+    box = (int(min(xs)), int(min(ys)), int(max(xs)) + 1, int(max(ys)) + 1)
+    return {"box": box, "k": k_spec[0], "kmul": k_spec[1], "ss": k_spec[2],
+            "mask": None, "poly": pts}
+
+
+def trace_region(base_img, spec, turd, alphamax, sample_n=240000, step=999, ss_default=1, global_k=0,
+                 centers=None, feather=0):
     """Trace one region at its own colour budget and (optional) own supersampling.
 
     spec = {"box": (x0, y0, x1, y1) or None, "k": K, "ss": ss or None,
@@ -200,8 +231,11 @@ def trace_region(base_img, spec, turd, alphamax, sample_n=240000, step=999, ss_d
         k = max(8, min(4096, k))
     else:
         k = int(spec["k"])
-    boxes = median_cut(_palette_sample(carr, sample_n), k)
-    centers = np.array([b.mean(0) for b in boxes], dtype=np.float32)
+    if centers is None:
+        boxes = median_cut(_palette_sample(carr, sample_n), k)
+        centers = np.array([b.mean(0) for b in boxes], dtype=np.float32)
+    else:
+        centers = np.asarray(centers, dtype=np.float32)
     if len(centers) == 0:
         return "", 0, 0
     lab = cKDTree(centers).query(carr, workers=-1)[1].astype(np.int32).reshape(ch * sr, cw * sr)
@@ -210,8 +244,19 @@ def trace_region(base_img, spec, turd, alphamax, sample_n=240000, step=999, ss_d
         if sr != 1:
             m = m.resize((cw * sr, ch * sr), Image.NEAREST)
         keep = np.asarray(m, dtype=np.uint8) > 127
+    elif spec.get("poly"):
+        m = _region_poly_mask(spec["poly"], base_img.size).crop((x0, y0, x1, y1))
+        if sr != 1:
+            m = m.resize((cw * sr, ch * sr), Image.NEAREST)
+        keep = np.asarray(m, dtype=np.uint8) > 127
     else:
         keep = np.ones_like(lab, bool)
+    if feather:
+        try:
+            from scipy.ndimage import binary_dilation
+            keep = binary_dilation(keep, iterations=int(feather))
+        except Exception:
+            pass
     out, used = [], 0
     for ci in range(len(centers)):
         sub = (lab == ci) & keep
@@ -294,7 +339,10 @@ def main():
     alpha_ramp = None              # None = auto (on for blending, off for reference-colour)
     alpha_true_color = 0
     alpha_min_err = 0.0
-    regions = []          # [(x0, y0, x1, y1, K)] 局部重绘：给指定区域独立色数
+    regions = []          # 局部重绘：给指定区域独立色数
+    tile_spec = None      # --tile CxR:K[,SS]：整幅图平铺，不留低预算底图
+    palette_shared = None # --palette-shared[=K]：所有区域共用一份调色板，消除接缝色差
+    region_feather = 0    # --region-feather N：区域掩码外扩 N 像素，盖住边界
     alpha_refine = 0
     alpha_tol = 1.0
     compact_flag = False
@@ -452,6 +500,34 @@ def main():
                 raise SystemExit("--region needs x0,y0,x1,y1:K[,SS]")
             box_s, _, k_s = nxt.partition(":")
             regions.append(_parse_region(box_s, k_s))
+            i += 1
+        elif a.startswith("--region-poly="):
+            txt = a.split("=", 1)[1]
+            pts_s, _, k_s = txt.rpartition(":")
+            regions.append(_parse_region_poly(pts_s, k_s))
+        elif a == "--region-poly":
+            if nxt is None:
+                raise SystemExit("--region-poly needs \"x,y x,y ...\":K[,SS]")
+            pts_s, _, k_s = nxt.rpartition(":")
+            regions.append(_parse_region_poly(pts_s, k_s))
+            i += 1
+        elif a.startswith("--tile="):
+            tile_spec = a.split("=", 1)[1]
+        elif a == "--tile":
+            if nxt is None:
+                raise SystemExit("--tile needs CxR:K[,SS]")
+            tile_spec = nxt
+            i += 1
+        elif a.startswith("--palette-shared="):
+            palette_shared = int(a.split("=", 1)[1])
+        elif a == "--palette-shared":
+            palette_shared = 0        # 0 = 取区域里最大的 K
+        elif a.startswith("--region-feather="):
+            region_feather = int(a.split("=", 1)[1])
+        elif a == "--region-feather":
+            if nxt is None:
+                raise SystemExit("--region-feather needs a pixel count")
+            region_feather = int(nxt)
             i += 1
         elif a.startswith("--region-mask="):
             # Windows 盘符里也有冒号，必须从右边切
@@ -656,6 +732,23 @@ def main():
         img = img.filter(ImageFilter.GaussianBlur(blur))
     W, H = img.size
     base_img = img                      # 原分辨率副本：区域重绘用它，可按自己的 ss 采样
+
+    if tile_spec:
+        # 整幅平铺：不留"低预算底图"，接缝只出现在同样的高预算区域之间
+        grid_s, k_s = tile_spec.rpartition(":")[0::2]
+        cols, rows = [int(v) for v in grid_s.lower().split("x")]
+        for gy in range(rows):
+            for gx in range(cols):
+                spec = _parse_region("%d,%d,%d,%d" % (
+                    round(W * gx / cols), round(H * gy / rows),
+                    round(W * (gx + 1) / cols), round(H * (gy + 1) / rows)), k_s)
+                regions.append(spec)
+    shared_centers = None
+    if palette_shared is not None and regions:
+        _kmax = 0
+        for s in regions:
+            _kmax = max(_kmax, int(s["k"]) if not s.get("kmul") else int(round(K * float(s["kmul"]))))
+        shared_centers = shared_palette(base_img, palette_shared or _kmax)
     if ss > 1:
         img = img.resize((W * ss, H * ss), Image.LANCZOS)
     if med >= 3:
@@ -763,7 +856,8 @@ def main():
         # 局部重绘：把指定区域用独立的色数（和可选的独立 ss）重描一遍，覆盖在全局层之上。
         # 人像的脸/手值得高色数高分辨率，背景不值得——这就是"区域预算"。
         grp, used_r, k_res = trace_region(base_img, spec, turd, alphamax, sample_n=sample_n, step=MAXSTEP,
-                                          ss_default=ss, global_k=K)
+                                          ss_default=ss, global_k=K,
+                                          centers=shared_centers, feather=region_feather)
         if not grp:
             print("[vectorize] region %s produced nothing" % (spec.get("box"),), file=sys.stderr)
             continue
