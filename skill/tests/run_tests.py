@@ -94,6 +94,23 @@ def main():
             failed += 0 if row["pass"] else 1
         results.append(row)
         print(json.dumps(row, ensure_ascii=False))
+    # form.py：无参考图也要能给出比例量表（定形辅助）
+    import subprocess as _sp
+    import tempfile as _tf
+    _scripts = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "scripts")
+    _svg = os.path.join(_tf.gettempdir(), "form-selftest.svg")
+    with open(_svg, "w", encoding="utf-8") as _fh:
+        _fh.write('<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200" viewBox="0 0 200 200">'
+                  '<rect width="200" height="200" fill="#ff0000"/>'
+                  '<path d="M40 40 H160 V120 H40 Z" fill="#f7d9bd"/>'
+                  '<path d="M40 40 H160 V70 H40 Z" fill="#3a211d"/></svg>')
+    _fr = _sp.run([sys.executable, os.path.join(_scripts, "form.py"), _svg],
+                  capture_output=True, text=True)
+    _ok = _fr.returncode == 0 and "ratios" in _fr.stdout and "head_w_over_h" in _fr.stdout
+    print(json.dumps({"case": "form.py", "pass": _ok}, ensure_ascii=False))
+    if not _ok:
+        failed += 1
+
     if record:
         json.dump(expected, open(exp_path, "w"), indent=2, ensure_ascii=False)
         print("baseline recorded ->", exp_path)

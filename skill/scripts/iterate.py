@@ -66,6 +66,13 @@ def path_selected(attrs, op):
     return False
 
 
+def add_transform(tag, t):
+    if 'transform="' in tag:
+        return re.sub(r'transform="([^"]*)"', lambda m: 'transform="%s %s"' % (t, m.group(1)), tag, count=1)
+    i = tag.rindex("/>")
+    return tag[:i] + 'transform="%s" ' % t + tag[i:]
+
+
 def apply_path_op(text, op):
     """drop / recolor / redraw / reorder —— 一次扫描完成，避免下标漂移。"""
     kind = op["op"]
@@ -90,6 +97,15 @@ def apply_path_op(text, op):
         elif kind == "reorder":
             out.append(text[last:m.start()])
             moved.append(tag)
+        elif kind in ("scale", "move"):
+            out.append(text[last:m.start()])
+            if kind == "scale":
+                s = float(op.get("s", 1.0))
+                cx, cy = float(op.get("cx", 0)), float(op.get("cy", 0))
+                t = "translate(%g %g) scale(%g) translate(%g %g)" % (cx, cy, s, -cx, -cy)
+            else:
+                t = "translate(%g %g)" % (float(op.get("dx", 0)), float(op.get("dy", 0)))
+            out.append(add_transform(tag, t))
         last = m.end()
     out.append(text[last:])
     text = "".join(out)
@@ -191,7 +207,7 @@ def main():
             if kind == "region":
                 regions.append({"box": list(op["box"]), "k": op.get("k"), "ss": op.get("ss"),
                                 "source": "model"})
-            elif kind in ("remap", "draw", "drop", "recolor", "redraw", "reorder"):
+            elif kind in ("remap", "draw", "drop", "recolor", "redraw", "reorder", "scale", "move"):
                 text_ops.append(op)
             elif kind == "style":
                 # 整幅按画风重跑：只覆盖给定的项，其余继承 base
@@ -231,7 +247,7 @@ def main():
                 close = text.rfind("</svg>")
                 if close > 0:
                     text = text[:close] + extra + text[close:]
-            elif op.get("op") in ("drop", "recolor", "redraw", "reorder"):
+            elif op.get("op") in ("drop", "recolor", "redraw", "reorder", "scale", "move"):
                 text = apply_path_op(text, op)
         return text
 
@@ -265,7 +281,7 @@ def main():
         if not os.path.exists(svg):
             return None, None, (b.stderr or b.stdout).strip()[-200:]
         if text_ops:
-            need_ids = any(op.get("op") in ("drop", "recolor", "redraw", "reorder") for op in text_ops)
+            need_ids = any(op.get("op") in ("drop", "recolor", "redraw", "reorder", "scale", "move") for op in text_ops)
             with open(svg, "r", encoding="utf-8") as fh:
                 t = fh.read()
             if need_ids:

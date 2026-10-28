@@ -169,6 +169,17 @@ iterate.py - yy1.svg --blank 420x600 --patch spec.json
 iterate.py - yy2.svg --from-svg yy1.svg --patch fix.json
 ```
 
+**定形 + 量比例**（没有参考图时唯一的"尺子"）：
+
+```bash
+python scripts/form.py yy4.svg --out form.json --guides preview.png
+# ratios: head_w_over_h / eye_line / neck_over_head / shoulder_over_head
+#         head_on_canvas / head_over_canvas_w / hair_over_face
+# failed: 哪几条超出容差
+```
+
+`--guides` 写一张带「头高刻度尺 + 中轴 + 脸框 + 眼线」的预览图，只用于看，不进成品。比例不对时用 `scale` / `move` 补丁整体调形体，而不是重画每个点。
+
 ask 在有参考和无参考两种情况下都会停住，输出 `preview_png`、路径数、颜色数，以及下一轮命令；`--base` 可省。想回到脚本自己挑块（无模型），加 `--mode auto`。
 
 自动档规则：按 `--grid`（默认 8）分块算渲染误差，每轮挑最差 `--top` 块，预算取 `global_K × k_mult^round`（默认 2×，上限 `--k-max`），收益低于 `--min-gain`（默认 0.05）就停。已覆盖的块不会重复补。最终只保留最好的一轮。
