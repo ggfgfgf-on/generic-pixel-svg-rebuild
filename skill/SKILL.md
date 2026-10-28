@@ -123,6 +123,23 @@ python <skill>/scripts/iterate.py ref.png out.svg --base "..." --patch patch.jso
          {"op": "region", "box": [120, 440, 300, 560], "k": 192}]}
 ```
 
+补丁支持四类 op：
+
+| op | 作用 | 典型用途 |
+|---|---|---|
+| `region` | 局部加色数/超采样 | 脸、手、主体 |
+| `style` | 用新参数**整幅重跑**（K/turd/alphamax/dil/blur/ss） | 换画风：平涂、描边、粗线 |
+| `remap` | 改颜色：`from/to/tol` 或整幅贴合 `to_palette` | 统一色调、海报化、限定色板 |
+| `draw` | 注入模型自己写的 path `d` | 补细节、加签名、**从零作画** |
+
+**从零作画**：`--blank 420x300` 从空白画布起步，内容全靠 `draw` 给（不需要参考图、不跑描摹）：
+
+```bash
+python <skill>/scripts/iterate.py - out.svg --base "2 6 1.0 0 0 1 0" --blank 420x300 --patch draw.json
+```
+
+实测 7 条 path / 0.8KB 出一张完整风景（天空、太阳、云、两层山、两只鸟）。**能画的是符号化的东西**：图标、logo、UI 元素、扁平插画、示意图；照片级和复杂人像仍然不行（token 带宽 + 没有先验）。
+
 自动档规则：按 `--grid`（默认 8）分块算渲染误差，每轮挑最差 `--top` 块，预算取 `global_K × k_mult^round`（默认 2×，上限 `--k-max`），收益低于 `--min-gain`（默认 0.05）就停。已覆盖的块不会重复补。最终只保留最好的一轮。
 
 实测 400×711 人像（base K=48 ss=2）：

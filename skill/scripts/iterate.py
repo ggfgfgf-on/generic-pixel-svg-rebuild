@@ -85,27 +85,89 @@ def main():
     ap.add_argument("--k-max", type=int, default=1024)
     ap.add_argument("--min-gain", type=float, default=0.05)
     ap.add_argument("--patch", default="", help="JSON patch file with {'ops': [...]}")
+    ap.add_argument("--blank", default="", help="WxH: start from an empty canvas (no reference, draw-only)")
     ap.add_argument("--keep", default="")
     a = ap.parse_args()
 
     base = a.base.split()
     global_k = int(base[0])
-    W, H = Image.open(a.ref).size
+    if a.blank:
+        W, H = [int(v) for v in a.blank.lower().split("x")]
+    else:
+        W, H = Image.open(a.ref).size
     tmp = tempfile.mkdtemp(prefix="iterate-svg-")
     regions, rounds = [], []
 
     model_ops = []
+    text_ops = []          # remap / draw：只改文本，不重跑描摹
     if a.patch:
         with open(a.patch, "r", encoding="utf-8") as fh:
             model_ops = json.load(fh).get("ops", [])
+        idx = {"K": 0, "turd": 1, "alphamax": 2, "dil": 3, "blur": 4, "ss": 5, "sk_thr": 6}
         for op in model_ops:
-            if op.get("op") == "region":
+            kind = op.get("op")
+            if kind == "region":
                 regions.append({"box": list(op["box"]), "k": op.get("k"), "ss": op.get("ss"),
                                 "source": "model"})
+            elif kind in ("remap", "draw"):
+                text_ops.append(op)
+            elif kind == "style":
+                # 整幅按画风重跑：只覆盖给定的项，其余继承 base
+                for key, pos in idx.items():
+                    if key in op:
+                        base[pos] = str(op[key])
+                        if pos == 0:
+                            global_k = int(op[key])
+
+    def apply_text_ops(text, ops):
+        """remap / draw 只改 SVG 文本，不重跑描摹，所以是瞬时的。"""
+        import re
+        for op in ops:
+            if op.get("op") == "remap" and op.get("to_palette"):
+                pal = [tuple(int(c.lstrip("#")[i:i + 2], 16) for i in (0, 2, 4)) for c in op["to_palette"]]
+                pal = np.array(pal, dtype=np.float32)
+
+                def snap(m):
+                    h = m.group(1)
+                    rgb = np.array([int(h[1:3], 16), int(h[3:5], 16), int(h[5:7], 16)], dtype=np.float32)
+                    i = int(np.argmin(((pal - rgb) ** 2).sum(1)))
+                    return 'fill="#%02x%02x%02x"' % tuple(int(v) for v in pal[i])
+                text = re.sub(r'fill="(#[0-9a-fA-F]{6})"', snap, text)
+            elif op.get("op") == "remap" and op.get("from") and op.get("to"):
+                src = np.array([int(op["from"].lstrip("#")[i:i + 2], 16) for i in (0, 2, 4)], dtype=np.float32)
+                dst = op["to"]
+                tol = float(op.get("tol", 24))
+
+                def swap(m):
+                    h = m.group(1)
+                    rgb = np.array([int(h[1:3], 16), int(h[3:5], 16), int(h[5:7], 16)], dtype=np.float32)
+                    return ('fill="%s"' % dst) if np.abs(rgb - src).max() <= tol else m.group(0)
+                text = re.sub(r'fill="(#[0-9a-fA-F]{6})"', swap, text)
+        draws = [op for op in ops if op.get("op") == "draw"]
+        if draws:
+            extra = "".join('<path fill="%s" fill-rule="evenodd" data-step="99" d="%s"/>'
+                            % (op.get("fill", "#000000"), op["d"]) for op in draws)
+            close = text.rfind("</svg>")
+            if close > 0:
+                text = text[:close] + extra + text[close:]
+        return text
 
     def build(tag):
         svg = os.path.join(tmp, tag + ".svg")
         png = os.path.join(tmp, tag + ".png")
+        if a.blank:
+            with open(svg, "w", encoding="utf-8") as fh:
+                fh.write('<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="%d" viewBox="0 0 %d %d">'
+                         '<rect width="%d" height="%d" fill="#ffffff"/></svg>' % (W, H, W, H, W, H))
+            b = None
+            if text_ops:
+                with open(svg, "r", encoding="utf-8") as fh:
+                    t = fh.read()
+                with open(svg, "w", encoding="utf-8") as fh:
+                    fh.write(apply_text_ops(t, text_ops))
+            if not render(svg, png, W, H):
+                return None, None, "render failed"
+            return svg, png, {"mean": None, "pct_le5": None, "uncovered": None}
         cmd = [PY, os.path.join(HERE, "vectorize.py"), a.ref, svg] + base
         for r in regions:
             spec = "%d,%d,%d,%d:%d" % (r["box"][0], r["box"][1], r["box"][2], r["box"][3], int(r["k"]))
@@ -115,6 +177,11 @@ def main():
         b = run(cmd)
         if not os.path.exists(svg):
             return None, None, (b.stderr or b.stdout).strip()[-200:]
+        if text_ops:
+            with open(svg, "r", encoding="utf-8") as fh:
+                t = fh.read()
+            with open(svg, "w", encoding="utf-8") as fh:
+                fh.write(apply_text_ops(t, text_ops))
         if not render(svg, png, W, H):
             return None, None, "render failed"
         m = metric(a.ref, png)
@@ -132,6 +199,8 @@ def main():
     best = rounds[0]
     best_svg = svg
 
+    if a.blank:
+        a.rounds = 0        # 空白画布没有参考可迭代，只有模型给的图层
     for it in range(1, a.rounds + 1):
         tiles = tile_errors(a.ref, rounds[-1]["png"], a.grid)
         if model_ops:
