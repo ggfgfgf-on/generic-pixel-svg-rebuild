@@ -68,8 +68,8 @@
 
 | 组合 | 修后 | 数字 |
 |---|---|---|
-| elements + palette-shared | 改为 snap，保留元素 K | 9.20 → 5.78（不共享仍最好：4.25） |
-| tile 非整除 | 裁切框扩 2px 重叠 | 接缝 1.57× → 0.62/0.74/0.45 |
+| elements + palette-shared | 不兼容：忽略并告警 | 强制 9.20 / snap 5.78 / 不共享 4.25 |
+| tile + palette-shared | 不兼容：忽略 | snap 5.23 vs 4.23 |
 | paint_process 透明源 | 输出裁到 alpha clipPath | clip bbox = 主体 bbox，透明保留 |
 
 ## 7. 未验证项

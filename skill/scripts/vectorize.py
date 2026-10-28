@@ -905,6 +905,12 @@ def main():
         for s in regions:
             _kmax = max(_kmax, int(s["k"]) if not s.get("kmul") else int(round(K * float(s["kmul"]))))
         shared_centers = shared_palette(base_img, palette_shared or _kmax)
+        if elements_spec or tile_spec:
+            # 实测：elements 强制共享 4.25->9.20，snap 共享 4.25->5.78；tile snap 共享 4.23->5.23。
+            # 两个模式都会变差，直接忽略，避免"能跑但更差"的选项。
+            print("[vectorize] --palette-shared ignored: incompatible with --elements/--tile "
+                  "(measured worse both forced and snapped)", file=sys.stderr)
+            shared_centers = None
 
     if ss > 1:
         img = img.resize((W * ss, H * ss), Image.LANCZOS)

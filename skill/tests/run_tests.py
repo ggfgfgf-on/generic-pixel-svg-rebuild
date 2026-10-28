@@ -135,6 +135,26 @@ def main():
     print(json.dumps({"case": "paint_process-alpha", "bbox": _bbox, "pass": _alpha_ok}))
     if not _alpha_ok:
         failed += 1
+    # 不兼容组合：--palette-shared 与 --elements/--tile 必须被忽略，不能悄悄降质
+    _img = os.path.join(SKILL, "tests", "fixtures", "photo-320x180.png")
+    def _combo_mean(extra, tag):
+        out = os.path.join(_tf.gettempdir(), "combo-%s.svg" % tag)
+        png = os.path.join(_tf.gettempdir(), "combo-%s.png" % tag)
+        r = _sp.run([PY, os.path.join(_scripts, "vectorize.py"), _img, out,
+                     "16", "6", "1.0", "1", "0.4", "1", "0"] + extra,
+                    capture_output=True, text=True, check=True)
+        _sp.run([PY, os.path.join(_scripts, "render.py"), out, png, "320", "180"],
+                check=True, capture_output=True)
+        m = json.loads(_sp.run([PY, os.path.join(_scripts, "metric.py"), _img, png],
+                               capture_output=True, text=True).stdout.strip().splitlines()[-1])
+        return m["mean"], (r.stdout + r.stderr)
+    _a, _log_a = _combo_mean(["--elements", "12:300:192,2"], "el")
+    _b, _log_b = _combo_mean(["--elements", "12:300:192,2", "--palette-shared=48"], "el-shared")
+    _combo_ok = ("ignored" in _log_b) and abs(_a - _b) < 0.02
+    print(json.dumps({"case": "palette-shared-incompatible", "base": round(_a, 3),
+                      "shared": round(_b, 3), "pass": _combo_ok}))
+    if not _combo_ok:
+        failed += 1
     # form.py：无参考图也要能给出比例量表（定形辅助）
     import subprocess as _sp
     import tempfile as _tf
